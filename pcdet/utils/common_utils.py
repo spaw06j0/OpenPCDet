@@ -31,6 +31,12 @@ def drop_info_with_name(info, name):
         ret_info[key] = info[key][keep_indices]
     return ret_info
 
+# def drop_info_with_difficult(info, difficulty)
+#     ret_info = {}
+#     keep_indices = [i for i, x in enumerate(info['difficulty']) if x != difficulty]
+#     for key in info.keys():
+#         ret_info[key] = info[key][keep_indices]
+#     return ret_info
 
 def rotate_points_along_z(points, angle):
     """

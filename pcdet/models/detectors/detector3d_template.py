@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from ...ops.iou3d_nms import iou3d_nms_utils
 from ...utils.spconv_utils import find_all_spconv_keys
-from .. import backbones_2d, backbones_3d, dense_heads, roi_heads
+from .. import backbones_2d, backbones_3d, dense_heads, roi_heads, necks
 from ..backbones_2d import map_to_bev
 from ..backbones_3d import pfe, vfe
 from ..model_utils import model_nms_utils
@@ -22,7 +22,7 @@ class Detector3DTemplate(nn.Module):
 
         self.module_topology = [
             'vfe', 'backbone_3d', 'map_to_bev_module', 'pfe',
-            'backbone_2d', 'dense_head',  'point_head', 'roi_head'
+            'backbone_2d', 'neck', 'dense_head',  'point_head', 'roi_head'
         ]
 
     @property
@@ -102,10 +102,31 @@ class Detector3DTemplate(nn.Module):
             model_cfg=self.model_cfg.BACKBONE_2D,
             input_channels=model_info_dict['num_bev_features']
         )
+        # SVDNet
+        model_info_dict['num_upsample_filters'] = backbone_2d_module.num_upsample_filters
+        model_info_dict['num_upsamples'] = backbone_2d_module.num_upsamples
+
         model_info_dict['module_list'].append(backbone_2d_module)
         model_info_dict['num_bev_features'] = backbone_2d_module.num_bev_features
         return backbone_2d_module, model_info_dict
+    
+    def build_neck(self, model_info_dict):
+        if self.model_cfg.get('NECK', None) is None:
+            return None, model_info_dict
 
+        neck_module = necks.__all__[self.model_cfg.NECK.NAME](
+            model_cfg=self.model_cfg.NECK,
+            num_upsamples=model_info_dict['num_upsamples'],
+            upsample_filters=model_info_dict['num_upsample_filters'],
+            grid_size=model_info_dict['grid_size'],
+            voxel_size=model_info_dict['voxel_size'],
+            point_cloud_range=model_info_dict['point_cloud_range'],
+            num_classes=self.num_class if not self.model_cfg.DENSE_HEAD.CLASS_AGNOSTIC else 1
+        )
+        model_info_dict['num_bev_features'] = neck_module.num_bev_features
+        model_info_dict['module_list'].append(neck_module)
+        return neck_module, model_info_dict
+        
     def build_pfe(self, model_info_dict):
         if self.model_cfg.get('PFE', None) is None:
             return None, model_info_dict
@@ -328,6 +349,7 @@ class Detector3DTemplate(nn.Module):
         return recall_dict
 
     def _load_state_dict(self, model_state_disk, *, strict=True):
+        
         state_dict = self.state_dict()  # local cache of state_dict
 
         spconv_keys = find_all_spconv_keys(self)
@@ -350,7 +372,6 @@ class Detector3DTemplate(nn.Module):
             if key in state_dict and state_dict[key].shape == val.shape:
                 update_model_state[key] = val
                 # logger.info('Update weight %s: %s' % (key, str(val.shape)))
-
         if strict:
             self.load_state_dict(update_model_state)
         else:
@@ -388,7 +409,6 @@ class Detector3DTemplate(nn.Module):
         checkpoint = torch.load(filename, map_location=loc_type)
         epoch = checkpoint.get('epoch', -1)
         it = checkpoint.get('it', 0.0)
-
         self._load_state_dict(checkpoint['model_state'], strict=True)
 
         if optimizer is not None:

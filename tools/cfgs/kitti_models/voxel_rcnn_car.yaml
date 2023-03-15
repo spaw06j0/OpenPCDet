@@ -98,6 +98,8 @@ MODEL:
         REG_FC: [256, 256]
         DP_RATIO: 0.3
 
+        FEATURE_NORM: False
+
         NMS_CONFIG:
             TRAIN:
                 NMS_TYPE: nms_gpu

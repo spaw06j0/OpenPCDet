@@ -1,0 +1,120 @@
+average class :  [77.0671911  88.44925948]
+average class :  [57.03211739 71.81849121]
+average class :  [13.87484835 23.26932877]
+ 
+average class :  [78.98288927 90.51464973]
+average class :  [60.28765153 73.06887941]
+average class :  [13.04470294 25.05937035]
+ 
+average class :  [76.62092063 86.44125644]
+average class :  [55.85514686 67.48406306]
+average class :  [13.74840571 24.00855661]
+ 
+average class :  [79.57927062 89.21885862]
+average class :  [57.8527492  70.15301983]
+average class :  [13.67846392 23.30735438]
+ 
+average class :  [74.48736145 86.92695882]
+average class :  [58.90156526 70.31977829]
+average class :  [15.76520851 27.01357244]
+ 
+average class :  [78.98292783 89.67925736]
+average class :  [60.35904942 72.26734261]
+average class :  [16.20678828 27.34388738]
+ 
+average class :  [77.15590737 87.80719598]
+average class :  [57.14880962 72.20335392]
+average class :  [15.54701483 27.28920903]
+ 
+average class :  [79.98346738 89.14108301]
+average class :  [56.73807841 68.79393863]
+average class :  [13.76481766 23.93744521]
+ 
+average class :  [81.17611511 90.30986279]
+average class :  [60.58986164 71.16863812]
+average class :  [17.09524685 27.96936254]
+ 
+average class :  [75.22436465 87.75409891]
+average class :  [56.87682656 68.86349761]
+average class :  [14.63029958 24.01099164]
+ 
+average class :  [78.58724292 89.26002975]
+average class :  [59.25390375 71.217424  ]
+average class :  [13.56441577 23.19290595]
+ 
+average class :  [79.97177523 89.31985757]
+average class :  [58.82509325 70.99087173]
+average class :  [14.98761339 27.04411474]
+ 
+average class :  [75.42078683 89.04574248]
+average class :  [58.51214689 70.19923687]
+average class :  [15.07975056 25.83099042]
+ 
+average class :  [79.74313868 90.24204633]
+average class :  [62.69567583 73.02315747]
+average class :  [15.91829433 26.75768821]
+ 
+average class :  [80.60986688 90.70251407]
+average class :  [61.79250179 72.37336194]
+average class :  [17.07654037 27.71564336]
+ 
+average class :  [79.8052307  89.41253725]
+average class :  [61.73263229 72.53978175]
+average class :  [15.81226554 26.70064397]
+ 
+average class :  [78.97152156 90.36456687]
+average class :  [60.61923051 73.56258687]
+average class :  [16.27869523 27.21203207]
+ 
+average class :  [80.99134136 90.41862053]
+average class :  [62.0760126  72.67598018]
+average class :  [15.84490229 25.7728158 ]
+ 
+average class :  [79.54688414 91.05155109]
+average class :  [61.69860945 73.6388265 ]
+average class :  [16.92115353 26.89737597]
+ 
+average class :  [81.08385349 90.45260287]
+average class :  [61.93502562 73.10074682]
+average class :  [16.22955378 26.79792842]
+ 
+average class :  [78.71874307 90.81858146]
+average class :  [61.6877143  73.32860639]
+average class :  [16.96730326 26.38119427]
+ 
+average class :  [79.05930646 90.96515108]
+average class :  [60.69406074 72.49036009]
+average class :  [15.07598539 25.29330538]
+ 
+average class :  [79.20922906 90.52210828]
+average class :  [59.83544972 71.26487243]
+average class :  [16.93173131 27.21790666]
+ 
+average class :  [79.76887262 90.75207452]
+average class :  [61.73705499 73.01474064]
+average class :  [17.03050874 27.50220882]
+ 
+# 1
+average class :  [80.25573133 90.73558089]
+average class :  [62.13933157 73.87291719]
+average class :  [16.61692423 27.22686173]
+ 
+average class :  [79.56579792 90.58890653]
+average class :  [60.45996151 73.3455671 ]
+average class :  [16.99307954 27.343223  ]
+ 
+average class :  [80.77920318 90.77070909]
+average class :  [61.90039042 73.59405111]
+average class :  [17.03139887 27.71339386]
+ 
+average class :  [80.41159567 90.84698039]
+average class :  [61.46566118 73.52758271]
+average class :  [17.56940945 28.03374252]
+ 
+average class :  [80.67735045 90.97019559]
+average class :  [61.21515853 73.16758194]
+average class :  [17.61822914 28.11826386]
+ 
+average class :  [80.55339885 90.97147628]
+average class :  [61.51158912 73.64173903]
+average class :  [18.20264277 28.80404062]

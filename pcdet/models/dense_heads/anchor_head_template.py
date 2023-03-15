@@ -1,12 +1,13 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import math
 
 from ...utils import box_coder_utils, common_utils, loss_utils
 from .target_assigner.anchor_generator import AnchorGenerator
 from .target_assigner.atss_target_assigner import ATSSTargetAssigner
 from .target_assigner.axis_aligned_target_assigner import AxisAlignedTargetAssigner
-
+from .head import AdaFace
 
 class AnchorHeadTemplate(nn.Module):
     def __init__(self, model_cfg, num_class, class_names, grid_size, point_cloud_range, predict_boxes_when_training):
@@ -99,8 +100,8 @@ class AnchorHeadTemplate(nn.Module):
         return targets_dict
 
     def get_cls_layer_loss(self):
-        cls_preds = self.forward_ret_dict['cls_preds']
-        box_cls_labels = self.forward_ret_dict['box_cls_labels']
+        cls_preds = self.forward_ret_dict['cls_preds'] # [8, 200, 176, 18]
+        box_cls_labels = self.forward_ret_dict['box_cls_labels'] # [8, 211200]
         batch_size = int(cls_preds.shape[0])
         cared = box_cls_labels >= 0  # [N, num_anchors]
         positives = box_cls_labels > 0
@@ -116,18 +117,50 @@ class AnchorHeadTemplate(nn.Module):
         reg_weights /= torch.clamp(pos_normalizer, min=1.0)
         cls_weights /= torch.clamp(pos_normalizer, min=1.0)
         cls_targets = box_cls_labels * cared.type_as(box_cls_labels)
-        cls_targets = cls_targets.unsqueeze(dim=-1)
-
-        cls_targets = cls_targets.squeeze(dim=-1)
+        cls_targets = cls_targets.unsqueeze(dim=-1) # [8, 211200, 1]
+        cls_targets = cls_targets.squeeze(dim=-1) # [8, 211200]
         one_hot_targets = torch.zeros(
             *list(cls_targets.shape), self.num_class + 1, dtype=cls_preds.dtype, device=cls_targets.device
-        )
+        )   # [8, 211200, 4]
         one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
-        cls_preds = cls_preds.view(batch_size, -1, self.num_class)
-        one_hot_targets = one_hot_targets[..., 1:]
+        # [8, 211200, 4]
+        cls_preds = cls_preds.view(batch_size, -1, self.num_class) #[8, 211200, 3]
+        one_hot_targets = one_hot_targets[..., 1:] # [8, 211200, 3]
+
+        ########################## adative loss ##########################
+        # norms = self.forward_ret_dict['norms']  # [bs, 1, 200, 176]
+        # cls_preds = cls_preds.clamp(-1+1e-3, 1-1e-3)    # cosine
+
+        # safe_norms = torch.clip(norms, min=0.001, max=100)
+        # safe_norms = safe_norms.clone().detach()
+        # # margin_scaler = 2 * (safe_norms - torch.min(safe_norms)) / (torch.max(safe_norms) - torch.min(safe_norms)) - 1
+        
+        # with torch.no_grad():
+        #     mean = safe_norms.mean().detach()
+        #     std = safe_norms.std().detach()
+
+        # margin_scaler = (safe_norms - mean) / (std + 1e-3)
+        # margin_scaler = margin_scaler * 0.333
+        # margin_scaler = torch.clip(margin_scaler, -1, 1)
+
+        # margin_scaler = torch.cat((margin_scaler, margin_scaler, margin_scaler, margin_scaler, margin_scaler, margin_scaler), dim=1)
+        # margin_scaler = margin_scaler.view(one_hot_targets.shape[0], one_hot_targets.shape[1])
+        # margin_scaler = torch.stack((margin_scaler, margin_scaler, margin_scaler), dim=-1)
+
+        # g_angular = 0.4*margin_scaler * -1 
+        # m_arc = one_hot_targets * g_angular
+        # theta = cls_preds.acos()
+        # theta_m = torch.clip(theta + m_arc, min=1e-3, max=math.pi-1e-3)
+        # cls_preds = theta_m.cos()
+
+        # g_add = 0.4 + (0.4 * margin_scaler)
+        # m_cos = one_hot_targets * g_add
+        # cls_preds = cls_preds - m_cos
+
+        # cls_preds = cls_preds * 64
+        #################################################################        
         cls_loss_src = self.cls_loss_func(cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
         cls_loss = cls_loss_src.sum() / batch_size
-
         cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
         tb_dict = {
             'rpn_loss_cls': cls_loss.item()
@@ -245,8 +278,11 @@ class AnchorHeadTemplate(nn.Module):
             anchors = self.anchors
         num_anchors = anchors.view(-1, anchors.shape[-1]).shape[0]
         batch_anchors = anchors.view(1, -1, anchors.shape[-1]).repeat(batch_size, 1, 1)
+        # print(cls_preds.shape)
         batch_cls_preds = cls_preds.view(batch_size, num_anchors, -1).float() \
             if not isinstance(cls_preds, list) else cls_preds
+        # print(batch_cls_preds.shape)
+        # exit()
         batch_box_preds = box_preds.view(batch_size, num_anchors, -1) if not isinstance(box_preds, list) \
             else torch.cat(box_preds, dim=1).view(batch_size, num_anchors, -1)
         batch_box_preds = self.box_coder.decode_torch(batch_box_preds, batch_anchors)

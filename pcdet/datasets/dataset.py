@@ -167,7 +167,6 @@ class DatasetTemplate(torch_data.Dataset):
                 data_dict[key].append(val)
         batch_size = len(batch_list)
         ret = {}
-
         for key, val in data_dict.items():
             try:
                 if key in ['voxels', 'voxel_num_points']:
@@ -184,6 +183,13 @@ class DatasetTemplate(torch_data.Dataset):
                     for k in range(batch_size):
                         batch_gt_boxes3d[k, :val[k].__len__(), :] = val[k]
                     ret[key] = batch_gt_boxes3d
+                ### num_points ###
+                # elif key in ['num_points_in_gt']:
+                #     max_num_point = max([len(x) for x in val])
+                #     batch_gt_num_points = np.zeros((batch_size, max_num_point, val[0].shape[-1]), dtype=np.int)
+                #     for k in range(batch_size):
+                #         batch_gt_num_points[k, :val[k].__len__(), :] = val[k]
+                #     ret[key] = batch_gt_num_points
                 elif key in ['gt_boxes2d']:
                     max_boxes = 0
                     max_boxes = max([len(x) for x in val])

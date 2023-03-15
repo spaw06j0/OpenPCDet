@@ -1,0 +1,104 @@
+average class :  [65.74547983 81.42825454]
+average class :  [44.57432121 55.27606809]
+average class :  [10.70645549 19.72812457]
+ 
+average class :  [62.82780407 78.03661974]
+average class :  [42.30863087 53.59930126]
+average class :  [ 9.92450589 18.78684749]
+ 
+average class :  [64.91464288 78.66710802]
+average class :  [44.46140132 55.71642713]
+average class :  [10.22702317 20.12772672]
+ 
+average class :  [62.68784207 77.32110855]
+average class :  [39.76251767 50.47664774]
+average class :  [10.60121651 18.95286737]
+ 
+average class :  [61.40255899 76.30399639]
+average class :  [40.23843035 50.95800007]
+average class :  [10.16546579 18.36261948]
+ 
+average class :  [66.01442032 80.03981352]
+average class :  [43.84270535 54.50397727]
+average class :  [10.80397465 19.16871428]
+ 
+average class :  [66.06258004 79.96137821]
+average class :  [44.49291815 55.32701502]
+average class :  [11.78470088 19.89364994]
+ 
+average class :  [64.05454686 78.61104154]
+average class :  [42.7897645  53.67939813]
+average class :  [10.4969614 18.8871311]
+ 
+average class :  [63.26830095 76.8772971 ]
+average class :  [42.04294255 52.43274235]
+average class :  [10.15785343 18.14020075]
+ 
+average class :  [61.76896501 75.77222153]
+average class :  [40.00461209 50.29970976]
+average class :  [ 9.3995683  17.76521767]
+ 
+average class :  [64.73049539 77.62655446]
+average class :  [42.89032486 53.28268459]
+average class :  [10.390348   19.32661715]
+ 
+average class :  [63.83913412 78.13410558]
+average class :  [42.08812594 52.30603416]
+average class :  [10.42485253 18.80545745]
+ 
+average class :  [64.76713259 78.39918904]
+average class :  [43.86233673 53.90209966]
+average class :  [10.35271337 18.93076431]
+ 
+average class :  [64.10195674 78.25685154]
+average class :  [42.45334317 52.60073954]
+average class :  [11.16213681 19.77360465]
+ 
+average class :  [64.6389867  77.47432787]
+average class :  [41.98978513 52.64756344]
+average class :  [10.19065345 18.27616891]
+ 
+average class :  [63.22916163 77.15009067]
+average class :  [41.96568489 51.86888428]
+average class :  [10.23707328 18.23083714]
+ 
+average class :  [62.80751386 77.15129557]
+average class :  [43.08123928 52.98636385]
+average class :  [10.96117465 19.35500811]
+ 
+average class :  [63.54135682 77.12849219]
+average class :  [41.86071331 51.77150216]
+average class :  [10.69580443 18.77792381]
+ 
+average class :  [64.54857179 78.14444209]
+average class :  [42.94153386 53.5705537 ]
+average class :  [10.89639003 19.0569303 ]
+ 
+average class :  [64.17713651 78.68116713]
+average class :  [43.17826054 53.84032837]
+average class :  [11.85545902 20.19490959]
+ 
+average class :  [63.42248457 77.65624453]
+average class :  [43.50292218 53.83851145]
+average class :  [10.78446797 18.48045092]
+ 
+average class :  [64.33872092 78.74397557]
+average class :  [43.4088086 53.6437191]
+average class :  [10.75798756 19.71487019]
+ 
+average class :  [62.90947271 77.44633772]
+average class :  [42.27893765 52.41121319]
+average class :  [10.86929708 19.03608343]
+ 
+average class :  [62.85165124 76.54215569]
+average class :  [41.976808   51.90651997]
+average class :  [11.35773801 19.22429899]
+ 
+average class :  [63.34261486 77.08024288]
+average class :  [42.714795   53.00970559]
+average class :  [10.49650135 18.80613418]
+ 
+average class :  [63.71003454 77.38678431]
+average class :  [43.21617869 53.63098401]
+average class :  [11.30893929 19.96327886]
+ 

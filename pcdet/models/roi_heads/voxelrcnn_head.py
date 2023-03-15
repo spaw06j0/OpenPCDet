@@ -3,7 +3,7 @@ import torch.nn as nn
 from ...ops.pointnet2.pointnet2_stack import voxel_pool_modules as voxelpool_stack_modules
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
-
+import torch.nn.functional as F
 
 class VoxelRCNNHead(RoIHeadTemplate):
     def __init__(self, backbone_channels, model_cfg, point_cloud_range, voxel_size, num_class=1, **kwargs):
@@ -62,7 +62,12 @@ class VoxelRCNNHead(RoIHeadTemplate):
             if k != self.model_cfg.CLS_FC.__len__() - 1 and self.model_cfg.DP_RATIO > 0:
                 cls_fc_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
         self.cls_fc_layers = nn.Sequential(*cls_fc_list)
-        self.cls_pred_layer = nn.Linear(pre_channel, self.num_class, bias=True)
+        if self.model_cfg.FEATURE_NORM:
+            # weight normalization
+            self.cls_pred_layer = nn.utils.weight_norm(nn.Linear(pre_channel, self.num_class, bias=False))
+        else:
+            # original
+            self.cls_pred_layer = nn.Linear(pre_channel, self.num_class, bias=True)       
 
         reg_fc_list = []
         for k in range(0, self.model_cfg.REG_FC.__len__()):
@@ -78,8 +83,22 @@ class VoxelRCNNHead(RoIHeadTemplate):
         self.reg_fc_layers = nn.Sequential(*reg_fc_list)
         self.reg_pred_layer = nn.Linear(pre_channel, self.box_coder.code_size * self.num_class, bias=True)
 
-        self.init_weights()
+        if self.model_cfg.get("IOU_FC", False):
+            iou_fc_list = []
+            for k in range(0, self.model_cfg.IOU_FC.__len__()):
+                iou_fc_list.extend([
+                    nn.Linear(pre_channel, self.model_cfg.REG_FC[k], bias=False),
+                    nn.BatchNorm1d(self.model_cfg.REG_FC[k]),
+                    nn.ReLU()
+                ])
+            pre_channel = self.model_cfg.IOU_FC[k]
+            self.iou_fc_layers = nn.Sequential(*iou_fc_list)
+            self.iou_pred_layers = nn.Linear(pre_channel, 1, bias=True)
 
+
+        self.init_weights()
+        self.maxpool = nn.MaxPool1d(32)
+        
     def init_weights(self):
         init_func = nn.init.xavier_normal_
         for module_list in [self.shared_fc_layer, self.cls_fc_layers, self.reg_fc_layers]:
@@ -90,9 +109,17 @@ class VoxelRCNNHead(RoIHeadTemplate):
                         nn.init.constant_(m.bias, 0)
                     
         nn.init.normal_(self.cls_pred_layer.weight, 0, 0.01)
-        nn.init.constant_(self.cls_pred_layer.bias, 0)
+        if not self.model_cfg.FEATURE_NORM:
+            nn.init.constant_(self.cls_pred_layer.bias, 0)
         nn.init.normal_(self.reg_pred_layer.weight, mean=0, std=0.001)
         nn.init.constant_(self.reg_pred_layer.bias, 0)
+        if self.model_cfg.get("IOU_FC", False):
+            for m in self.iou_fc_layers.modules():
+                if isinstance(m, nn.Linear):
+                    init_func(m.weight)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+            nn.init.normal_(self.iou_pred_layers.weight, 0, 0.001)
 
     # def _init_weights(self):
     #     init_func = nn.init.xavier_normal_
@@ -142,6 +169,7 @@ class VoxelRCNNHead(RoIHeadTemplate):
         roi_grid_batch_cnt = rois.new_zeros(batch_size).int().fill_(roi_grid_coords.shape[1])
 
         pooled_features_list = []
+        maxpooled_features_list = []
         for k, src_name in enumerate(self.pool_cfg.FEATURES_SOURCE):
             pool_layer = self.roi_grid_pool_layers[k]
             cur_stride = batch_dict['multi_scale_3d_strides'][src_name]
@@ -185,10 +213,12 @@ class VoxelRCNNHead(RoIHeadTemplate):
                 pooled_features.shape[-1]
             )  # (BxN, 6x6x6, C)
             pooled_features_list.append(pooled_features)
-        
+
+            maxpool_feature = self.maxpool(pooled_features)
+            maxpooled_features_list.append(maxpool_feature)
         ms_pooled_features = torch.cat(pooled_features_list, dim=-1)
-        
-        return ms_pooled_features
+        # ms_maxpooled_features = torch.cat(maxpooled_features_list, dim=-1)
+        return ms_pooled_features#, ms_maxpooled_features
 
 
     def get_global_grid_points_of_roi(self, rois, grid_size):
@@ -227,24 +257,40 @@ class VoxelRCNNHead(RoIHeadTemplate):
             targets_dict = self.assign_targets(batch_dict)
             batch_dict['rois'] = targets_dict['rois']
             batch_dict['roi_labels'] = targets_dict['roi_labels']
-
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
 
         # Box Refinement
         pooled_features = pooled_features.view(pooled_features.size(0), -1)
-        shared_features = self.shared_fc_layer(pooled_features)
-        rcnn_cls = self.cls_pred_layer(self.cls_fc_layers(shared_features))
+        shared_features = self.shared_fc_layer(pooled_features) # (BxN, 256)
+        # print(shared_features.shape)
+        if self.model_cfg.FEATURE_NORM:
+            rcnn_cls = self.cls_pred_layer(F.normalize(self.cls_fc_layers(shared_features), dim=1))
+        else:
+            rcnn_cls = self.cls_pred_layer(self.cls_fc_layers(shared_features))
+
         rcnn_reg = self.reg_pred_layer(self.reg_fc_layers(shared_features))
 
-        # grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
-        # batch_size_rcnn = pooled_features.shape[0]
-        # pooled_features = pooled_features.permute(0, 2, 1).\
-        #     contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
+        if self.model_cfg.get("IOU_FC", False):
+            rcnn_iou = self.iou_pred_layers(self.iou_fc_layers(shared_features))
+        # print("rcnn_cls shape: ", rcnn_cls.shape)
+        # feature_norm
+        # last_layer_features = maxpooled_features[:, :, 2]
 
-        # shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
-        # rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
-        # rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
+        feature_norm = torch.norm(shared_features, dim=1, keepdim=True)
+        # print(feature_norm.reshape(512,))
+
+        # normalize to (-1, 1)
+        # minimal, maximum = torch.min(feature_norm), torch.max(feature_norm)
+        # feature_norm = (2 * (feature_norm - minimal) / (maximum - minimal) - 1)
+        # print(feature_norm.shape)
+        # print(feature_norm)
+        # exit()
+        # print(feature_norm.reshape(512,))
+
+        # 亂搞!
+        # feature_norm = 10 * F.normalize(feature_norm, dim=0).detach()
+        # print(10*feature_norm.reshape(512,))
 
         if not self.training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
@@ -256,7 +302,10 @@ class VoxelRCNNHead(RoIHeadTemplate):
         else:
             targets_dict['rcnn_cls'] = rcnn_cls
             targets_dict['rcnn_reg'] = rcnn_reg
-
+            if self.model_cfg.get("IOU_FC", False):
+                targets_dict['rcnn_iou'] = rcnn_iou
+            if self.model_cfg.FEATURE_NORM:
+                targets_dict['feature_norm'] = feature_norm
             self.forward_ret_dict = targets_dict
 
         return batch_dict

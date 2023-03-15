@@ -7,6 +7,9 @@ from .second_net import SECONDNet
 from .second_net_iou import SECONDNetIoU
 from .caddn import CaDDN
 from .voxel_rcnn import VoxelRCNN
+from .voxel_rcnn_adaloss import VoxelRCNN_ADALOSS
+from .voxel_rcnn_combine import VoxelRCNN_COMBINE
+from .voxel_rcnn_iou_loss import VoxelRCNN_IOU_loss
 from .centerpoint import CenterPoint
 from .pv_rcnn_plusplus import PVRCNNPlusPlus
 
@@ -21,7 +24,10 @@ __all__ = {
     'CaDDN': CaDDN,
     'VoxelRCNN': VoxelRCNN,
     'CenterPoint': CenterPoint,
-    'PVRCNNPlusPlus': PVRCNNPlusPlus
+    'PVRCNNPlusPlus': PVRCNNPlusPlus,
+    'VoxelRCNNADALOSS': VoxelRCNN_ADALOSS,
+    'VoxelRCNN_COMBINE': VoxelRCNN_COMBINE,
+    'VoxelRCNN_IOU_LOSS': VoxelRCNN_IOU_loss,
 }
 
 

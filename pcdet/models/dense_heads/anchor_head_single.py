@@ -1,8 +1,9 @@
 import numpy as np
+import torch
 import torch.nn as nn
-
+from torch.nn import Parameter
 from .anchor_head_template import AnchorHeadTemplate
-
+# from .head import AdaFace
 
 class AnchorHeadSingle(AnchorHeadTemplate):
     def __init__(self, model_cfg, input_channels, num_class, class_names, grid_size, point_cloud_range,
@@ -14,10 +15,18 @@ class AnchorHeadSingle(AnchorHeadTemplate):
 
         self.num_anchors_per_location = sum(self.num_anchors_per_location)
 
+        # original:
         self.conv_cls = nn.Conv2d(
             input_channels, self.num_anchors_per_location * self.num_class,
             kernel_size=1
         )
+
+        # adaptive:
+        # self.conv_cls = torch.nn.utils.weight_norm(nn.Conv2d(
+        #     input_channels, self.num_anchors_per_location * self.num_class,
+        #     kernel_size=1, bias=False
+        # ))
+
         self.conv_box = nn.Conv2d(
             input_channels, self.num_anchors_per_location * self.box_coder.code_size,
             kernel_size=1
@@ -35,20 +44,28 @@ class AnchorHeadSingle(AnchorHeadTemplate):
 
     def init_weights(self):
         pi = 0.01
-        nn.init.constant_(self.conv_cls.bias, -np.log((1 - pi) / pi))
+        # nn.init.constant_(self.conv_cls.bias, -np.log((1 - pi) / pi))
+        # nn.init.xavier_uniform(self.conv_cls)
         nn.init.normal_(self.conv_box.weight, mean=0, std=0.001)
 
     def forward(self, data_dict):
         spatial_features_2d = data_dict['spatial_features_2d']
+        # print(spatial_features_2d.shape)
+
+        # norm:
+        # norms = torch.norm(spatial_features_2d, 2, 1, keepdim=True)
+        # # print(norms.shape)
+        # normalized_spatial_features_2d = spatial_features_2d / norms
 
         cls_preds = self.conv_cls(spatial_features_2d)
         box_preds = self.conv_box(spatial_features_2d)
-
         cls_preds = cls_preds.permute(0, 2, 3, 1).contiguous()  # [N, H, W, C]
         box_preds = box_preds.permute(0, 2, 3, 1).contiguous()  # [N, H, W, C]
 
         self.forward_ret_dict['cls_preds'] = cls_preds
         self.forward_ret_dict['box_preds'] = box_preds
+
+        # self.forward_ret_dict['norms'] = norms
 
         if self.conv_dir_cls is not None:
             dir_cls_preds = self.conv_dir_cls(spatial_features_2d)
@@ -71,5 +88,6 @@ class AnchorHeadSingle(AnchorHeadTemplate):
             data_dict['batch_cls_preds'] = batch_cls_preds
             data_dict['batch_box_preds'] = batch_box_preds
             data_dict['cls_preds_normalized'] = False
-
+        # print(data_dict.keys())
+        # print(data_dict['batch_cls_preds'].shape)
         return data_dict

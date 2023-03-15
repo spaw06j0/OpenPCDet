@@ -265,5 +265,4 @@ class VoxelBackBone8xFocal(nn.Module):
                 'x_conv4': 8,
             }
         })
-
         return batch_dict

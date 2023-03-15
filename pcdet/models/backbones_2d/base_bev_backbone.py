@@ -77,6 +77,8 @@ class BaseBEVBackbone(nn.Module):
             ))
 
         self.num_bev_features = c_in
+        self.num_upsample_filters = num_upsample_filters
+        self.num_upsamples = min(len(num_upsample_filters), num_levels)
 
     def forward(self, data_dict):
         """
