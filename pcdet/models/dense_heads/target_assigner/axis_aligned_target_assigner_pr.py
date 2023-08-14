@@ -5,7 +5,7 @@ from ....ops.iou3d_nms import iou3d_nms_utils
 from ....utils import box_utils
 
 
-class AxisAlignedTargetAssigner(object):
+class AxisAlignedTargetAssignerPR(object):
     def __init__(self, model_cfg, class_names, box_coder, match_height=False):
         super().__init__()
 
@@ -34,7 +34,7 @@ class AxisAlignedTargetAssigner(object):
         #         for idx, name in enumerate(rpn_head_cfg['HEAD_CLS_NAME']):
         #             self.gt_remapping[name] = idx + 1
 
-    def assign_targets(self, all_anchors, gt_boxes_with_classes):
+    def assign_targets(self, all_anchors, gt_boxes_with_classes, pts_ratio):
         """
         Args:
             all_anchors: [(N, 7), ...]
@@ -42,11 +42,12 @@ class AxisAlignedTargetAssigner(object):
         Returns:
 
         """
-
+        # if (torch.isnan(pts_ratio).any()):
+        #     print("assign_targets: pts_ratio:", pts_ratio)
         bbox_targets = []
         cls_labels = []
         reg_weights = []
-        anchor_iou = []
+        pts_ratio_weight = []
         batch_size = gt_boxes_with_classes.shape[0]
         gt_classes = gt_boxes_with_classes[:, :, -1]
         gt_boxes = gt_boxes_with_classes[:, :, :-1]
@@ -57,6 +58,7 @@ class AxisAlignedTargetAssigner(object):
                 cnt -= 1
             cur_gt = cur_gt[:cnt + 1]
             cur_gt_classes = gt_classes[k][:cnt + 1].int()
+            cur_pts_ratio = pts_ratio[k][:cnt+1]
 
             target_list = []
             for anchor_class_name, anchors in zip(self.anchor_class_names, all_anchors):
@@ -80,11 +82,15 @@ class AxisAlignedTargetAssigner(object):
                     feature_map_size = anchors.shape[:3]
                     anchors = anchors.view(-1, anchors.shape[-1])
                     selected_classes = cur_gt_classes[mask]
-
+                    # print(selected_classes.shape)
+                    selected_pts_ratio = cur_pts_ratio[mask]
+                    # print(selected_pts_ratio.shape)
+                    # exit()
                 single_target = self.assign_targets_single(
                     anchors,
                     cur_gt[mask],
                     gt_classes=selected_classes,
+                    pts_ratio = selected_pts_ratio,
                     matched_threshold=self.matched_thresholds[anchor_class_name],
                     unmatched_threshold=self.unmatched_thresholds[anchor_class_name]
                 )
@@ -101,19 +107,12 @@ class AxisAlignedTargetAssigner(object):
                 target_dict['box_cls_labels'] = torch.cat(target_dict['box_cls_labels'], dim=0).view(-1)
                 target_dict['reg_weights'] = torch.cat(target_dict['reg_weights'], dim=0).view(-1)
             else:
-                # if self.adaptive == 'AnchorAdaptiveHead':
-                #     target_dict = {
-                #         'box_cls_labels': [t['box_cls_labels'].view(*feature_map_size, -1) for t in target_list],
-                #         'box_reg_targets': [t['box_reg_targets'].view(*feature_map_size, -1, self.box_coder.code_size)
-                #                             for t in target_list],
-                #         'reg_weights': [t['reg_weights'].view(*feature_map_size, -1) for t in target_list],
-                #         'anchor_iou': [t['anchor_iou'].view(*feature_map_size, -1) for t in target_list]
-                #     }
                 target_dict = {
                     'box_cls_labels': [t['box_cls_labels'].view(*feature_map_size, -1) for t in target_list],
                     'box_reg_targets': [t['box_reg_targets'].view(*feature_map_size, -1, self.box_coder.code_size)
                                         for t in target_list],
                     'reg_weights': [t['reg_weights'].view(*feature_map_size, -1) for t in target_list],
+                    'pts_ratio_weight': [t['pts_ratio_weight'].view(*feature_map_size, -1) for t in target_list]
                 }
                 target_dict['box_reg_targets'] = torch.cat(
                     target_dict['box_reg_targets'], dim=-2
@@ -121,60 +120,45 @@ class AxisAlignedTargetAssigner(object):
 
                 target_dict['box_cls_labels'] = torch.cat(target_dict['box_cls_labels'], dim=-1).view(-1)
                 target_dict['reg_weights'] = torch.cat(target_dict['reg_weights'], dim=-1).view(-1)
-                # if self.adaptive == 'AnchorAdaptiveHead':
-                #     target_dict['anchor_iou'] = torch.cat(target_dict['anchor_iou'], dim=-1).view(-1)
+                target_dict['pts_ratio_weight'] = torch.cat(target_dict['pts_ratio_weight'], dim=-1).view(-1)
 
             bbox_targets.append(target_dict['box_reg_targets'])
             cls_labels.append(target_dict['box_cls_labels'])
             reg_weights.append(target_dict['reg_weights'])
-            # if self.adaptive == 'AnchorAdaptiveHead':
-            #     anchor_iou.append(target_dict['anchor_iou'])  
+            pts_ratio_weight.append(target_dict['pts_ratio_weight'])
 
         bbox_targets = torch.stack(bbox_targets, dim=0)
 
         cls_labels = torch.stack(cls_labels, dim=0)
         reg_weights = torch.stack(reg_weights, dim=0)
-        # if self.adaptive == 'AnchorAdaptiveHead':
-        #     anchor_iou = torch.stack(anchor_iou, dim=0)
-        #     all_targets_dict = {
-        #         'box_cls_labels': cls_labels,
-        #         'box_reg_targets': bbox_targets,
-        #         'reg_weights': reg_weights,
-        #         'anchor_iou': anchor_iou
+        pts_ratio_weight = torch.stack(pts_ratio_weight, dim=0)
 
-        #     }
         all_targets_dict = {
             'box_cls_labels': cls_labels,
             'box_reg_targets': bbox_targets,
             'reg_weights': reg_weights,
+            'pts_ratio_weight': pts_ratio_weight,
 
         }
         return all_targets_dict
 
-    def assign_targets_single(self, anchors, gt_boxes, gt_classes, matched_threshold=0.6, unmatched_threshold=0.45):
+    def assign_targets_single(self, anchors, gt_boxes, gt_classes, pts_ratio, matched_threshold=0.6, unmatched_threshold=0.45):
 
         num_anchors = anchors.shape[0]
         num_gt = gt_boxes.shape[0]
-
+        # if (torch.isnan(pts_ratio).any()):
+        #     print("pts_ratio:", pts_ratio)
         labels = torch.ones((num_anchors,), dtype=torch.int32, device=anchors.device) * -1
         gt_ids = torch.ones((num_anchors,), dtype=torch.int32, device=anchors.device) * -1
         gt_iou = torch.zeros((num_anchors,), dtype=torch.int32, device=anchors.device)
+        pts_ratio_weight = torch.ones((num_anchors,), device=anchors.device)
 
         if len(gt_boxes) > 0 and anchors.shape[0] > 0:
             anchor_by_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(anchors[:, 0:7], gt_boxes[:, 0:7]) \
                 if self.match_height else box_utils.boxes3d_nearest_bev_iou(anchors[:, 0:7], gt_boxes[:, 0:7])
-            # print(gt_boxes.shape)
-            # print(gt_boxes)
-            # print("###########")
             # NOTE: The speed of these two versions depends the environment and the number of anchors
-            # anchor_to_gt_argmax = torch.from_numpy(anchor_by_gt_overlap.cpu().numpy().argmax(axis=1)).cuda()
-            # print("anchor_by_gt_overlap.shape: ", anchor_by_gt_overlap.shape)
             anchor_to_gt_argmax = anchor_by_gt_overlap.argmax(dim=1)
-            # print("anchor_to_gt_argmax.shape: ", anchor_to_gt_argmax.shape)
             anchor_to_gt_max = anchor_by_gt_overlap[torch.arange(num_anchors, device=anchors.device), anchor_to_gt_argmax] # 70400 (200*176*2)
-            # print("anchor_to_gt_max.shape: ", anchor_to_gt_max.shape)
-            # exit()
-            # gt_to_anchor_argmax = torch.from_numpy(anchor_by_gt_overlap.cpu().numpy().argmax(axis=0)).cuda()
             gt_iou = anchor_to_gt_max
             gt_to_anchor_argmax = anchor_by_gt_overlap.argmax(dim=0)
             gt_to_anchor_max = anchor_by_gt_overlap[gt_to_anchor_argmax, torch.arange(num_gt, device=anchors.device)]
@@ -197,6 +181,7 @@ class AxisAlignedTargetAssigner(object):
         fg_inds = (labels > 0).nonzero()[:, 0]
 
         if self.pos_fraction is not None:
+            
             num_fg = int(self.pos_fraction * self.sample_size)
             if len(fg_inds) > num_fg:
                 num_disabled = len(fg_inds) - num_fg
@@ -212,34 +197,38 @@ class AxisAlignedTargetAssigner(object):
         else:
             if len(gt_boxes) == 0 or anchors.shape[0] == 0:
                 labels[:] = 0
+                pts_ratio_weight[:] = 0
             else:
                 labels[bg_inds] = 0
                 labels[anchors_with_max_overlap] = gt_classes[gt_inds_force]
 
         bbox_targets = anchors.new_zeros((num_anchors, self.box_coder.code_size))
+
         if len(gt_boxes) > 0 and anchors.shape[0] > 0:
             fg_gt_boxes = gt_boxes[anchor_to_gt_argmax[fg_inds], :]
+            # print("fg_gt_boxes: ", fg_gt_boxes.shape)
             fg_anchors = anchors[fg_inds, :]
             bbox_targets[fg_inds, :] = self.box_coder.encode_torch(fg_gt_boxes, fg_anchors)
 
-        reg_weights = anchors.new_zeros((num_anchors,))
+            fg_pts_ratio = pts_ratio[anchor_to_gt_argmax[fg_inds]]
+            if (torch.isnan(fg_pts_ratio).any()):
+                print(fg_pts_ratio)
+            pts_ratio_weight[fg_inds] = fg_pts_ratio
 
+        reg_weights = anchors.new_zeros((num_anchors,))
         if self.norm_by_num_examples:
             num_examples = (labels >= 0).sum()
             num_examples = num_examples if num_examples > 1.0 else 1.0
             reg_weights[labels > 0] = 1.0 / num_examples
         else:
-            reg_weights[labels > 0] = 1.0
-        # if self.adaptive == 'AnchorAdaptiveHead':
-        #     ret_dict = {
-        #         'box_cls_labels': labels,
-        #         'box_reg_targets': bbox_targets,
-        #         'reg_weights': reg_weights,
-        #         'anchor_iou': gt_iou,
-        #     }
+            reg_weights[labels > 0] = pts_ratio_weight[labels > 0]
+        # if (torch.isnan(reg_weights).any()):
+        #     print(pts_ratio_weight[labels > 0])
+
         ret_dict = {
             'box_cls_labels': labels,
             'box_reg_targets': bbox_targets,
             'reg_weights': reg_weights,
+            'pts_ratio_weight': pts_ratio_weight,
         }
         return ret_dict

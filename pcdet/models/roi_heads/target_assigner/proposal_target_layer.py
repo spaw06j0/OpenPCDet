@@ -73,6 +73,7 @@ class ProposalTargetLayer(nn.Module):
         Returns:
         
         """
+        # print(batch_dict.keys())
         batch_size = batch_dict['batch_size']
         rois = batch_dict['rois']
         roi_scores = batch_dict['roi_scores']

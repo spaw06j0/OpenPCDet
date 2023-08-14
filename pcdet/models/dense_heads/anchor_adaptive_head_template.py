@@ -2,13 +2,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import math
-
+from ...ops.iou3d_nms import iou3d_nms_utils
 from ...utils import box_coder_utils, common_utils, loss_utils
 from .target_assigner.anchor_generator import AnchorGenerator
 from .target_assigner.atss_target_assigner import ATSSTargetAssigner
 from .target_assigner.axis_aligned_target_assigner import AxisAlignedTargetAssigner
 
-class AnchorHeadTemplate(nn.Module):
+class AnchorAdaptiveHeadTemplate(nn.Module):
     def __init__(self, model_cfg, num_class, class_names, grid_size, point_cloud_range, predict_boxes_when_training):
         super().__init__()
         self.model_cfg = model_cfg
@@ -54,9 +54,9 @@ class AnchorHeadTemplate(nn.Module):
     def get_target_assigner(self, anchor_target_cfg):
         if anchor_target_cfg.NAME == 'ATSS':
             target_assigner = ATSSTargetAssigner(
-                model_cfg=self.model_cfg,
                 topk=anchor_target_cfg.TOPK,
                 box_coder=self.box_coder,
+                use_multihead=self.use_multihead,
                 match_height=anchor_target_cfg.MATCH_HEIGHT
             )
         elif anchor_target_cfg.NAME == 'AxisAlignedTargetAssigner':
@@ -85,6 +85,10 @@ class AnchorHeadTemplate(nn.Module):
             'dir_loss_func',
             loss_utils.WeightedCrossEntropyLoss()
         )
+        self.add_module(
+            'iou_loss_func',
+            loss_utils.WeightedSmoothL1Loss(code_weights=[1])
+        )
 
     def assign_targets(self, gt_boxes):
         """
@@ -107,6 +111,64 @@ class AnchorHeadTemplate(nn.Module):
         negatives = box_cls_labels == 0
         negative_cls_weights = negatives * 1.0
         cls_weights = (negative_cls_weights + 1.0 * positives).float()
+        reg_weights = positives.float()
+        if self.num_class == 1:
+            # class agnostic
+            box_cls_labels[positives] = 1
+
+        pos_normalizer = positives.sum(1, keepdim=True).float()
+        reg_weights /= torch.clamp(pos_normalizer, min=1.0)
+        cls_weights /= torch.clamp(pos_normalizer, min=1.0)
+        cls_targets = box_cls_labels * cared.type_as(box_cls_labels)
+        cls_targets = cls_targets.unsqueeze(dim=-1) # [8, 211200, 1]
+        cls_targets = cls_targets.squeeze(dim=-1) # [8, 211200]
+        one_hot_targets = torch.zeros(
+            *list(cls_targets.shape), self.num_class + 1, dtype=cls_preds.dtype, device=cls_targets.device
+        )   # [8, 211200, 4]
+        one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
+        # [8, 211200, 4]
+        cls_preds = cls_preds.view(batch_size, -1, self.num_class) #[8, 211200, 3]
+        one_hot_targets = one_hot_targets[..., 1:] # [8, 211200, 3]
+
+        cls_loss_src = self.cls_loss_func(cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
+        # print(cls_loss_src.shape)
+        cls_loss = cls_loss_src.sum() / batch_size
+        cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
+        tb_dict = {
+            'rpn_loss_cls': cls_loss.item()
+        }
+        return cls_loss, tb_dict
+
+    def get_cls_layer_adaptive_loss(self):
+        # cls_loss
+        cls_preds = self.forward_ret_dict['cls_preds'] # [8, 200, 176, 18]
+        box_cls_labels = self.forward_ret_dict['box_cls_labels'] # [8, 211200]
+        importance = self.forward_ret_dict['importance']
+        batch_size = int(cls_preds.shape[0])
+        cared = box_cls_labels >= 0  # [N, num_anchors]
+        positives = box_cls_labels > 0
+        negatives = box_cls_labels == 0
+        negative_cls_weights = negatives * 1.0
+        cls_weights = (negative_cls_weights + 1.0 * positives).float()
+        # print(cls_weights.shape)
+
+        # difficulty factor:
+        # difficulty_factor = self.forward_ret_dict['difficulty_factor']
+        # difficulty_factor = difficulty_factor.view(batch_size, -1, self.num_class)
+        # difficulty_factor = difficulty_factor.mean(dim = 2)
+        # print(difficulty_factor.shape)
+
+        # iou_loss
+        # iou_loss_src = nn.functional.normalize(iou_loss_src, dim=1).squeeze()
+        # iou_loss_src.detach()
+        # cls_weights = cls_weights * 2 * torch.exp(-iou_loss_src*iou_loss_src/0.25) * difficulty_factor
+
+        # only df
+        # cls_weights = cls_weights * difficulty_factor
+
+        # df and fn
+        # cls_weights = cls_weights * difficulty_factor * fn
+
         if self.num_class == 1:
             # class agnostic
             box_cls_labels[positives] = 1
@@ -121,49 +183,23 @@ class AnchorHeadTemplate(nn.Module):
         )   # [8, 211200, 4]
         one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
         # [8, 211200, 4]
+
         cls_preds = cls_preds.view(batch_size, -1, self.num_class) #[8, 211200, 3]
         one_hot_targets = one_hot_targets[..., 1:] # [8, 211200, 3]
 
-        ########################## adative loss ##########################
-        # norms = self.forward_ret_dict['norms']  # [bs, 1, 200, 176]
-        # cls_preds = cls_preds.clamp(-1+1e-3, 1-1e-3)    # cosine
-
-        # safe_norms = torch.clip(norms, min=0.001, max=100)
-        # safe_norms = safe_norms.clone().detach()
-        # # margin_scaler = 2 * (safe_norms - torch.min(safe_norms)) / (torch.max(safe_norms) - torch.min(safe_norms)) - 1
-        
-        # with torch.no_grad():
-        #     mean = safe_norms.mean().detach()
-        #     std = safe_norms.std().detach()
-
-        # margin_scaler = (safe_norms - mean) / (std + 1e-3)
-        # margin_scaler = margin_scaler * 0.333
-        # margin_scaler = torch.clip(margin_scaler, -1, 1)
-
-        # margin_scaler = torch.cat((margin_scaler, margin_scaler, margin_scaler, margin_scaler, margin_scaler, margin_scaler), dim=1)
-        # margin_scaler = margin_scaler.view(one_hot_targets.shape[0], one_hot_targets.shape[1])
-        # margin_scaler = torch.stack((margin_scaler, margin_scaler, margin_scaler), dim=-1)
-
-        # g_angular = 0.4*margin_scaler * -1 
-        # m_arc = one_hot_targets * g_angular
-        # theta = cls_preds.acos()
-        # theta_m = torch.clip(theta + m_arc, min=1e-3, max=math.pi-1e-3)
-        # cls_preds = theta_m.cos()
-
-        # g_add = 0.4 + (0.4 * margin_scaler)
-        # m_cos = one_hot_targets * g_add
-        # cls_preds = cls_preds - m_cos
-
-        # cls_preds = cls_preds * 64
-        #################################################################        
         cls_loss_src = self.cls_loss_func(cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
+
+        importance = importance.view(batch_size, -1, 1)
+        # cls_loss_src = cls_loss_src * importance + (1-importance) * (1-importance)
+        cls_loss_src = cls_loss_src * importance - (importance - 0.5) * (importance - 0.5)
+
         cls_loss = cls_loss_src.sum() / batch_size
         cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
         tb_dict = {
             'rpn_loss_cls': cls_loss.item()
         }
         return cls_loss, tb_dict
-
+    
     @staticmethod
     def add_sin_difference(boxes1, boxes2, dim=6):
         assert dim != -1
@@ -200,7 +236,6 @@ class AnchorHeadTemplate(nn.Module):
         reg_weights = positives.float()
         pos_normalizer = positives.sum(1, keepdim=True).float()
         reg_weights /= torch.clamp(pos_normalizer, min=1.0)
-
         if isinstance(self.anchors, list):
             if self.use_multihead:
                 anchors = torch.cat(
@@ -217,6 +252,7 @@ class AnchorHeadTemplate(nn.Module):
         # sin(a - b) = sinacosb-cosasinb
         box_preds_sin, reg_targets_sin = self.add_sin_difference(box_preds, box_reg_targets)
         loc_loss_src = self.reg_loss_func(box_preds_sin, reg_targets_sin, weights=reg_weights)  # [N, M]
+        # print(loc_loss_src.shape)
         loc_loss = loc_loss_src.sum() / batch_size
 
         loc_loss = loc_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
@@ -242,6 +278,140 @@ class AnchorHeadTemplate(nn.Module):
             tb_dict['rpn_loss_dir'] = dir_loss.item()
 
         return box_loss, tb_dict
+    
+    def get_box_reg_layer_adaptive_loss(self):
+        # box_loss
+        box_preds = self.forward_ret_dict['box_preds']
+        # print(box_preds.shape)
+        box_dir_cls_preds = self.forward_ret_dict.get('dir_cls_preds', None)
+        box_reg_targets = self.forward_ret_dict['box_reg_targets']
+        box_cls_labels = self.forward_ret_dict['box_cls_labels']
+        importance = self.forward_ret_dict['importance']
+        # print(importance.shape)
+        batch_size = int(box_preds.shape[0])
+
+        positives = box_cls_labels > 0
+
+        reg_weights = positives.float()
+        pos_normalizer = positives.sum(1, keepdim=True).float()
+        reg_weights /= torch.clamp(pos_normalizer, min=1.0)
+
+        # difficulty factor:
+        # difficulty_factor = self.forward_ret_dict['difficulty_factor']
+        # difficulty_factor = difficulty_factor.view(batch_size, -1, self.num_class)
+        # difficulty_factor = difficulty_factor.mean(dim = 2)
+
+        # fn
+        # fn = self.forward_ret_dict['fn']
+        # fn = fn.view(batch_size, -1).repeat(1, 6)
+        # iou_loss
+        # iou_loss_src = nn.functional.normalize(iou_loss_src, dim=1).squeeze()
+        # iou_loss_src.detach()
+
+        # iou_loss and df
+        # reg_weights = reg_weights * 2 * torch.exp(-iou_loss_src*iou_loss_src/0.25) * difficulty_factor
+        
+        # only df
+        # reg_weights = reg_weights * difficulty_factor
+        
+        # df and fn
+        # reg_weights = reg_weights * difficulty_factor * fn
+
+        if isinstance(self.anchors, list):
+            if self.use_multihead:
+                anchors = torch.cat(
+                    [anchor.permute(3, 4, 0, 1, 2, 5).contiguous().view(-1, anchor.shape[-1]) for anchor in
+                     self.anchors], dim=0)
+            else:
+                anchors = torch.cat(self.anchors, dim=-3)
+        else:
+            anchors = self.anchors
+        anchors = anchors.view(1, -1, anchors.shape[-1]).repeat(batch_size, 1, 1)
+        # print(box_preds.shape)
+        box_preds = box_preds.view(batch_size, -1,
+                                   box_preds.shape[-1] // self.num_anchors_per_location if not self.use_multihead else
+                                   box_preds.shape[-1])
+        # reg_weights = reg_weights * importance
+        # sin(a - b) = sinacosb-cosasinb
+        box_preds_sin, reg_targets_sin = self.add_sin_difference(box_preds, box_reg_targets)
+        loc_loss_src = self.reg_loss_func(box_preds_sin, reg_targets_sin, weights=reg_weights)  # [N, M]
+        importance = importance.view(batch_size, -1, 1)
+
+        # importance and regularization
+        # loc_loss_src = loc_loss_src * importance + (1-importance) * (1-importance)
+        loc_loss_src = loc_loss_src * importance - (importance - 0.5) * (importance - 0.5)
+
+        # loc_loss_src = loc_loss_src * 2 * torch.exp(-iou_loss_src*iou_loss_src/0.25) * difficulty_factor
+        loc_loss = loc_loss_src.sum() / batch_size
+        loc_loss = loc_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
+        box_loss = loc_loss
+        tb_dict = {
+            'rpn_loss_loc': loc_loss.item()
+        }
+
+        if box_dir_cls_preds is not None:
+            dir_targets = self.get_direction_target(
+                anchors, box_reg_targets,
+                dir_offset=self.model_cfg.DIR_OFFSET,
+                num_bins=self.model_cfg.NUM_DIR_BINS
+            )
+
+            dir_logits = box_dir_cls_preds.view(batch_size, -1, self.model_cfg.NUM_DIR_BINS)
+            weights = positives.type_as(dir_logits)
+            weights /= torch.clamp(weights.sum(-1, keepdim=True), min=1.0)
+            dir_loss = self.dir_loss_func(dir_logits, dir_targets, weights=weights)
+            dir_loss = dir_loss.sum() / batch_size
+            dir_loss = dir_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['dir_weight']
+            box_loss += dir_loss
+            tb_dict['rpn_loss_dir'] = dir_loss.item()
+
+        return box_loss, tb_dict
+    
+    # def get_iou_layer_loss(self):
+    #     # iou prediction:
+    #     iou_pred = self.forward_ret_dict['iou_preds']   #(4, 200, 176, 6)
+    #     # iou gt:
+    #     box_preds = self.forward_ret_dict['box_preds']
+    #     box_reg_targets = self.forward_ret_dict['box_reg_targets']
+    #     box_cls_labels = self.forward_ret_dict['box_cls_labels']
+    #     batch_size = int(box_preds.shape[0])
+    #     positives = box_cls_labels > 0
+    #     reg_weights = positives.float()
+    #     pos_normalizer = positives.sum(1, keepdim=True).float()
+    #     reg_weights /= torch.clamp(pos_normalizer, min=1.0)
+    #     if isinstance(self.anchors, list):
+    #         if self.use_multihead:
+    #             anchors = torch.cat([anchor.permute(3, 4, 0, 1, 2, 5).contiguous().view(-1, anchor.shape[-1])
+    #                                  for anchor in self.anchors], dim=0)
+    #         else:
+    #             anchors = torch.cat(self.anchors, dim=-3)
+    #     else:
+    #         anchors = self.anchors
+    #     num_anchors = anchors.view(-1, anchors.shape[-1]).shape[0]
+    #     batch_anchors = anchors.view(1, -1, anchors.shape[-1]).repeat(batch_size, 1, 1)
+    #     batch_box_preds = box_preds.view(batch_size, num_anchors, -1)
+    #     batch_box_preds = self.box_coder.decode_torch(batch_box_preds, batch_anchors)
+    #     batch_box_targets = self.box_coder.decode_torch(box_reg_targets, batch_anchors)
+    #     iou_gt = torch.zeros(box_cls_labels.shape).cuda()
+    #     pos_pred_mask = reg_weights > 0
+    #     for i in range(batch_size):
+    #         pred = batch_box_preds[i]
+    #         gt = batch_box_targets[i][pos_pred_mask[i]]
+    #         pred_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(pred, gt)
+    #         pred_gt_overlap_argmax = pred_gt_overlap.argmax(dim=1)
+    #         iou_gt[i] = pred_gt_overlap[torch.arange(num_anchors, device=anchors.device), pred_gt_overlap_argmax]
+        
+    #     iou_pred = iou_pred.view(batch_size, num_anchors, -1)
+    #     iou_gt = iou_gt.view(batch_size, num_anchors, 1)
+    #     iou_gt = 2 * iou_gt - 1
+    #     iou_loss_src = self.iou_loss_func(iou_pred, iou_gt, weights=reg_weights)  # [N, M]
+
+    #     iou_loss = iou_loss_src.sum() / batch_size
+    #     iou_loss = iou_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['iou_weight']
+    #     tb_dict = {
+    #         'rpn_loss_iou': iou_loss.item()
+    #     }
+    #     return iou_loss_src, iou_loss, tb_dict
 
     def get_loss(self):
         cls_loss, tb_dict = self.get_cls_layer_loss()
@@ -251,7 +421,17 @@ class AnchorHeadTemplate(nn.Module):
 
         tb_dict['rpn_loss'] = rpn_loss.item()
         return rpn_loss, tb_dict
+    
+    def get_adaptive_loss(self):
+        # iou_loss_src, iou_loss, tb_dict = self.get_iou_layer_loss()
+        # cls_loss, tb_dict = self.get_cls_layer_adaptive_loss()
+        cls_loss, tb_dict = self.get_cls_layer_adaptive_loss()
+        box_loss, tb_dict_box = self.get_box_reg_layer_adaptive_loss()
+        tb_dict.update(tb_dict_box)
+        rpn_loss = cls_loss + box_loss
 
+        tb_dict['rpn_loss'] = rpn_loss.item()
+        return rpn_loss, tb_dict
     def generate_predicted_boxes(self, batch_size, cls_preds, box_preds, dir_cls_preds=None):
         """
         Args:
@@ -275,11 +455,8 @@ class AnchorHeadTemplate(nn.Module):
             anchors = self.anchors
         num_anchors = anchors.view(-1, anchors.shape[-1]).shape[0]
         batch_anchors = anchors.view(1, -1, anchors.shape[-1]).repeat(batch_size, 1, 1)
-        # print(cls_preds.shape)
         batch_cls_preds = cls_preds.view(batch_size, num_anchors, -1).float() \
             if not isinstance(cls_preds, list) else cls_preds
-        # print(batch_cls_preds.shape)
-        # exit()
         batch_box_preds = box_preds.view(batch_size, num_anchors, -1) if not isinstance(box_preds, list) \
             else torch.cat(box_preds, dim=1).view(batch_size, num_anchors, -1)
         batch_box_preds = self.box_coder.decode_torch(batch_box_preds, batch_anchors)

@@ -103,7 +103,6 @@ class DatasetTemplate(torch_data.Dataset):
             if 'metadata' in batch_dict:
                 single_pred_dict['metadata'] = batch_dict['metadata'][index]
             annos.append(single_pred_dict)
-
         return annos
 
     def merge_all_iters_to_one_epoch(self, merge=True, epochs=None):
@@ -172,6 +171,7 @@ class DatasetTemplate(torch_data.Dataset):
             gt_classes = np.array([self.class_names.index(n) + 1 for n in data_dict['gt_names']], dtype=np.int32)
             gt_boxes = np.concatenate((data_dict['gt_boxes'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
             data_dict['gt_boxes'] = gt_boxes
+            
 
             if data_dict.get('gt_boxes2d', None) is not None:
                 data_dict['gt_boxes2d'] = data_dict['gt_boxes2d'][selected]
@@ -182,7 +182,6 @@ class DatasetTemplate(torch_data.Dataset):
         data_dict = self.data_processor.forward(
             data_dict=data_dict
         )
-
         if self.training and len(data_dict['gt_boxes']) == 0:
             new_index = np.random.randint(self.__len__())
             return self.__getitem__(new_index)
@@ -211,11 +210,22 @@ class DatasetTemplate(torch_data.Dataset):
                     ret[key] = np.concatenate(coors, axis=0)
                 elif key in ['gt_boxes']:
                     max_gt = max([len(x) for x in val])
+                    # print(max_gt)
                     batch_gt_boxes3d = np.zeros((batch_size, max_gt, val[0].shape[-1]), dtype=np.float32)
                     for k in range(batch_size):
                         batch_gt_boxes3d[k, :val[k].__len__(), :] = val[k]
                     ret[key] = batch_gt_boxes3d
-
+                elif key in ['pts_ratio']:
+                    # print(val)
+                    max_pts_ratio = max([len(x) for x in val])
+                    # print("max_pts_ratio:", max_pts_ratio)
+                    batch_pts_ratio = np.zeros((batch_size, max_pts_ratio), dtype=np.float32)
+                    for k in range(batch_size):
+                        # print(batch_pts_ratio.shape)
+                        # print(val[k].__len__())
+                        # print(val[k].shape)
+                        batch_pts_ratio[k, :val[k].__len__()] = val[k]
+                    ret[key] = batch_pts_ratio
                 ### num_points ###
                 # elif key in ['num_points_in_gt']:
                 #     max_num_point = max([len(x) for x in val])

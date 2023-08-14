@@ -2,15 +2,10 @@ CLASS_NAMES: ['Car', "Pedestrian", "Cyclist"]
 
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/kitti_dataset.yaml
-    GET_ITEM_LIST: ["images", "points", "calib_matricies", "gt_boxes2d"]
     DATA_AUGMENTOR:
         DISABLE_AUG_LIST: ['placeholder']
         AUG_CONFIG_LIST:
             - NAME: gt_sampling
-
-              # AUG_WITH_IMAGE: True # use PC-Image Aug
-              IMG_AUG_TYPE: kitti
-
               USE_ROAD_PLANE: True
               DB_INFO_PATH:
                   - kitti_dbinfos_train.pkl
@@ -41,9 +36,7 @@ MODEL:
         NAME: MeanVFE
 
     BACKBONE_3D:
-        NAME: VoxelBackBone8xFocal
-        USE_IMG: True
-        IMG_PRETRAIN: "../checkpoints/deeplabv3_resnet50_coco-cd0a2569.pth"
+        NAME: VoxelBackBone8x
 
     MAP_TO_BEV:
         NAME: HeightCompression
@@ -146,6 +139,7 @@ MODEL:
         ROI_GRID_POOL:
             FEATURES_SOURCE: ['x_conv2', 'x_conv3', 'x_conv4']
             PRE_MLP: True
+            
             GRID_SIZE: 6
             POOL_LAYERS:
                 x_conv2:
@@ -210,7 +204,7 @@ MODEL:
 
 
 OPTIMIZATION:
-    BATCH_SIZE_PER_GPU: 2
+    BATCH_SIZE_PER_GPU: 8
     NUM_EPOCHS: 80
 
     OPTIMIZER: adam_onecycle

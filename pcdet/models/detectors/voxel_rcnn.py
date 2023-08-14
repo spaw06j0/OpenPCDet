@@ -9,8 +9,7 @@ class VoxelRCNN(Detector3DTemplate):
         self.use_svd = self.model_cfg.get("USE_SVD", False)
 
     def forward(self, batch_dict):
-        # print(batch_dict.keys())
-        # exit()
+
         for cur_module in self.module_list:
             batch_dict = cur_module(batch_dict)
 
@@ -31,10 +30,10 @@ class VoxelRCNN(Detector3DTemplate):
 
         loss_rpn, tb_dict = self.dense_head.get_loss()
         # original
-        # loss_rcnn, tb_dict = self.roi_head.get_loss(tb_dict)
+        loss_rcnn, tb_dict = self.roi_head.get_loss(tb_dict)
 
         # combine
-        loss_rcnn, tb_dict = self.roi_head.get_loss(tb_dict)
+        # loss_rcnn, tb_dict = self.roi_head.get_loss(tb_dict)
 
         # if self.use_svd:
         #     rank_loss, tb_dict_rank = self.get_rank_loss(batch_dict)

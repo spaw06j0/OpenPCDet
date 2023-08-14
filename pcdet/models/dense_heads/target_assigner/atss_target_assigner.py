@@ -8,11 +8,13 @@ class ATSSTargetAssigner(object):
     """
     Reference: https://arxiv.org/abs/1912.02424
     """
-    def __init__(self, topk, box_coder, match_height=False):
+    def __init__(self, model_cfg, topk, box_coder, match_height=False):
+        
         self.topk = topk
         self.box_coder = box_coder
         self.match_height = match_height
-
+        self.use_multihead = model_cfg.get('USE_MULTIHEAD', False)
+        
     def assign_targets(self, anchors_list, gt_boxes_with_classes, use_multihead=False):
         """
         Args:

@@ -8,7 +8,7 @@ from ..model_utils.model_nms_utils import class_agnostic_nms
 from .target_assigner.proposal_target_layer import ProposalTargetLayer
 
 
-class RoIHead(nn.Module):
+class RoIHeadPRTemplate(nn.Module):
     def __init__(self, num_class, model_cfg, **kwargs):
         super().__init__()
         self.model_cfg = model_cfg
@@ -204,14 +204,11 @@ class RoIHead(nn.Module):
         if loss_cfgs.CLS_LOSS == 'BinaryCrossEntropy':
             rcnn_cls_flat = rcnn_cls.view(-1)
             # print(torch.min(rcnn_cls_flat), torch.max(rcnn_cls_flat))
-            if 'feature_norm' in forward_ret_dict.keys() and 'rcnn_iou' not in forward_ret_dict.keys():
+            if 'feature_norm' in forward_ret_dict.keys():
                 # print("here")
                 weights = forward_ret_dict['feature_norm'].view(-1)
                 # print(weights)
                 batch_loss_cls = F.binary_cross_entropy(torch.sigmoid(rcnn_cls_flat), rcnn_cls_labels.float(), weight=weights.detach(), reduction='none')
-            elif 'rcnn_iou' in forward_ret_dict.keys():
-                w = forward_ret_dict['rcnn_iou'].view(-1)
-                batch_loss_cls = F.binary_cross_entropy(torch.sigmoid(rcnn_cls_flat), rcnn_cls_labels.float(), weight=w.detach(), reduction='none')
             else:
                 # print("original_loss")
                 batch_loss_cls = F.binary_cross_entropy(torch.sigmoid(rcnn_cls_flat), rcnn_cls_labels.float(), reduction='none')
@@ -228,17 +225,6 @@ class RoIHead(nn.Module):
         tb_dict = {'rcnn_loss_cls': rcnn_loss_cls.item()}
         return rcnn_loss_cls, tb_dict
     
-    def get_iou_loss(self, forward_ret_dict):
-        rcnn_iou = forward_ret_dict['rcnn_iou'].view(-1)
-        iou = forward_ret_dict['gt_iou_of_rois'].view(-1)
-        # print(rcnn_iou)
-        # print(iou)
-        batch_loss_iou = F.binary_cross_entropy(torch.sigmoid(rcnn_iou), iou, reduction='none')
-        iou_valid_mask = (iou >= 0).float()
-        tb_dict = {}
-        rcnn_loss_iou = (batch_loss_iou * iou_valid_mask).sum() / torch.clamp(iou_valid_mask.sum(), min=1.0)
-        tb_dict['rcnn_loss_iou'] = rcnn_loss_iou.item()
-        return rcnn_loss_iou, tb_dict
 
     def get_loss(self, tb_dict=None):
         tb_dict = {} if tb_dict is None else tb_dict
@@ -248,128 +234,6 @@ class RoIHead(nn.Module):
         tb_dict.update(cls_tb_dict)
 
         rcnn_loss_reg, reg_tb_dict = self.get_box_reg_layer_loss(self.forward_ret_dict)
-        rcnn_loss += rcnn_loss_reg
-        tb_dict.update(reg_tb_dict)
-        tb_dict['rcnn_loss'] = rcnn_loss.item()
-        return rcnn_loss, tb_dict
-    
-    def get_box_reg_layer_adaptive_loss(self, forward_ret_dict):
-        rcnn_iou = forward_ret_dict['rcnn_iou'].view(-1)
-        iou = forward_ret_dict['gt_iou_of_rois'].view(-1)
-        batch_loss_iou = F.binary_cross_entropy(torch.sigmoid(rcnn_iou), iou, reduction='none')
-
-        loss_cfgs = self.model_cfg.LOSS_CONFIG
-        code_size = self.box_coder.code_size
-        reg_valid_mask = forward_ret_dict['reg_valid_mask'].view(-1)
-        gt_boxes3d_ct = forward_ret_dict['gt_of_rois'][..., 0:code_size]
-        gt_of_rois_src = forward_ret_dict['gt_of_rois_src'][..., 0:code_size].view(-1, code_size)
-        rcnn_reg = forward_ret_dict['rcnn_reg']  # (rcnn_batch_size, C)
-        roi_boxes3d = forward_ret_dict['rois']
-        rcnn_batch_size = gt_boxes3d_ct.view(-1, code_size).shape[0]
-
-        fg_mask = (reg_valid_mask > 0)
-        fg_sum = fg_mask.long().sum().item()
-
-        tb_dict = {}
-
-        if loss_cfgs.REG_LOSS == 'smooth-l1':
-            rois_anchor = roi_boxes3d.clone().detach().view(-1, code_size)
-            rois_anchor[:, 0:3] = 0
-            rois_anchor[:, 6] = 0
-            reg_targets = self.box_coder.encode_torch(
-                gt_boxes3d_ct.view(rcnn_batch_size, code_size), rois_anchor
-            )
-
-            rcnn_loss_reg = self.reg_loss_func(
-                rcnn_reg.view(rcnn_batch_size, -1).unsqueeze(dim=0),
-                reg_targets.unsqueeze(dim=0),
-            )  # [B, M, 7]
-
-            rcnn_loss_reg = (1 / (batch_loss_iou + 0.5)).reshape(1, -1, 1).detach() * rcnn_loss_reg
-            rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) * fg_mask.unsqueeze(dim=-1).float()).sum() / max(fg_sum, 1)
-            rcnn_loss_reg = rcnn_loss_reg * loss_cfgs.LOSS_WEIGHTS['rcnn_reg_weight']
-            tb_dict['rcnn_loss_reg'] = rcnn_loss_reg.item()
-
-            if loss_cfgs.CORNER_LOSS_REGULARIZATION and fg_sum > 0:
-                # TODO: NEED to BE CHECK
-                fg_rcnn_reg = rcnn_reg.view(rcnn_batch_size, -1)[fg_mask]
-                fg_roi_boxes3d = roi_boxes3d.view(-1, code_size)[fg_mask]
-
-                fg_roi_boxes3d = fg_roi_boxes3d.view(1, -1, code_size)
-                batch_anchors = fg_roi_boxes3d.clone().detach()
-                roi_ry = fg_roi_boxes3d[:, :, 6].view(-1)
-                roi_xyz = fg_roi_boxes3d[:, :, 0:3].view(-1, 3)
-                batch_anchors[:, :, 0:3] = 0
-                rcnn_boxes3d = self.box_coder.decode_torch(
-                    fg_rcnn_reg.view(batch_anchors.shape[0], -1, code_size), batch_anchors
-                ).view(-1, code_size)
-
-                rcnn_boxes3d = common_utils.rotate_points_along_z(
-                    rcnn_boxes3d.unsqueeze(dim=1), roi_ry
-                ).squeeze(dim=1)
-                rcnn_boxes3d[:, 0:3] += roi_xyz
-
-                loss_corner = loss_utils.get_corner_loss_lidar(
-                    rcnn_boxes3d[:, 0:7],
-                    gt_of_rois_src[fg_mask][:, 0:7]
-                )
-                loss_corner = loss_corner.mean()
-                loss_corner = loss_corner * loss_cfgs.LOSS_WEIGHTS['rcnn_corner_weight']
-
-                rcnn_loss_reg += loss_corner
-                tb_dict['rcnn_loss_corner'] = loss_corner.item()
-        else:
-            raise NotImplementedError
-
-        return rcnn_loss_reg, tb_dict
-
-    def get_box_cls_layer_adaptive_loss(self, forward_ret_dict):
-        rcnn_iou = forward_ret_dict['rcnn_iou'].view(-1)
-        iou = forward_ret_dict['gt_iou_of_rois'].view(-1)
-        batch_loss_iou = F.binary_cross_entropy(torch.sigmoid(rcnn_iou), iou, reduction='none')
-
-        loss_cfgs = self.model_cfg.LOSS_CONFIG
-        rcnn_cls = forward_ret_dict['rcnn_cls']
-        rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'].view(-1)
-        if loss_cfgs.CLS_LOSS == 'BinaryCrossEntropy':
-            rcnn_cls_flat = rcnn_cls.view(-1)
-            # print(torch.min(rcnn_cls_flat), torch.max(rcnn_cls_flat))
-            if 'feature_norm' in forward_ret_dict.keys() and 'rcnn_iou' not in forward_ret_dict.keys():
-                # print("here")
-                weights = forward_ret_dict['feature_norm'].view(-1)
-                # print(weights)
-                batch_loss_cls = F.binary_cross_entropy(torch.sigmoid(rcnn_cls_flat), rcnn_cls_labels.float(), weight=weights.detach(), reduction='none')
-            elif 'rcnn_iou' in forward_ret_dict.keys():
-                w = 1/ (batch_loss_iou + 0.5)
-                batch_loss_cls = F.binary_cross_entropy(torch.sigmoid(rcnn_cls_flat), rcnn_cls_labels.float(), weight=w.detach(), reduction='none')
-            else:
-                # print("original_loss")
-                batch_loss_cls = F.binary_cross_entropy(torch.sigmoid(rcnn_cls_flat), rcnn_cls_labels.float(), reduction='none')
-            cls_valid_mask = (rcnn_cls_labels >= 0).float()
-            rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum() / torch.clamp(cls_valid_mask.sum(), min=1.0)
-        elif loss_cfgs.CLS_LOSS == 'CrossEntropy':
-            batch_loss_cls = F.cross_entropy(rcnn_cls, rcnn_cls_labels, reduction='none', ignore_index=-1)
-            cls_valid_mask = (rcnn_cls_labels >= 0).float()
-            rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum() / torch.clamp(cls_valid_mask.sum(), min=1.0)
-        else:
-            raise NotImplementedError
-
-        rcnn_loss_cls = rcnn_loss_cls * loss_cfgs.LOSS_WEIGHTS['rcnn_cls_weight']
-        tb_dict = {'rcnn_loss_cls': rcnn_loss_cls.item()}
-        return rcnn_loss_cls, tb_dict
-    
-    def get_adaptive_loss(self, tb_dict=None):
-        tb_dict = {} if tb_dict is None else tb_dict
-        rcnn_loss = 0
-        rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_adaptive_loss(self.forward_ret_dict)
-        rcnn_loss += rcnn_loss_cls
-        tb_dict.update(cls_tb_dict)
-
-        rcnn_loss_iou, iou_tb_dict = self.get_iou_loss(self.forward_ret_dict)
-        rcnn_loss += rcnn_loss_iou
-        tb_dict.update(iou_tb_dict)
-
-        rcnn_loss_reg, reg_tb_dict = self.get_box_reg_layer_adaptive_loss(self.forward_ret_dict)
         rcnn_loss += rcnn_loss_reg
         tb_dict.update(reg_tb_dict)
         tb_dict['rcnn_loss'] = rcnn_loss.item()

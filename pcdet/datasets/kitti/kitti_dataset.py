@@ -154,7 +154,7 @@ class KittiDataset(DatasetTemplate):
 
         return pts_valid_flag
 
-    def get_infos(self, num_workers=4, has_label=True, count_inside_pts=True, sample_id_list=None):
+    def get_infos(self, num_workers=4, has_label=True, count_inside_pts=True, sample_id_list=None, count_2d_pts_ratio = True):
         import concurrent.futures as futures
 
         def process_single_scene(sample_idx):
@@ -218,11 +218,13 @@ class KittiDataset(DatasetTemplate):
                 l, h, w = dims[:, 0:1], dims[:, 1:2], dims[:, 2:3]
                 loc_lidar[:, 2] += h[:, 0] / 2
                 gt_boxes_lidar = np.concatenate(
-                    [loc_lidar, l, w, h, -(np.pi / 2 + rots[..., np.newaxis])], axis=1)
+                    [loc_lidar, l, w, h, -(np.pi / 2 + rots[..., np.newaxis])], axis=1)    
                 annotations['gt_boxes_lidar'] = gt_boxes_lidar
-
+                # print(gt_boxes_lidar.shape)
+                gt_boxes_img = annotations['bbox'][:num_objects]
+                # print(gt_boxes_img.shape)
                 info['annos'] = annotations
-
+                
                 if count_inside_pts:
                     points = self.get_lidar(sample_idx)
                     calib = self.get_calib(sample_idx)
@@ -231,16 +233,57 @@ class KittiDataset(DatasetTemplate):
                     fov_flag = self.get_fov_flag(
                         pts_rect, info['image']['image_shape'], calib)
                     pts_fov = points[fov_flag]
-                    corners_lidar = box_utils.boxes_to_corners_3d(
-                        gt_boxes_lidar)
+                    corners_lidar = box_utils.boxes_to_corners_3d(gt_boxes_lidar)
                     num_points_in_gt = -np.ones(num_gt, dtype=np.int32)
-
                     for k in range(num_objects):
-                        flag = box_utils.in_hull(
-                            pts_fov[:, 0:3], corners_lidar[k])
+                        flag = box_utils.in_hull(pts_fov[:, 0:3], corners_lidar[k])
+                        # print(pts_fov[:, 0:3].shape)
+                        # print(corners_lidar[k].shape)
                         num_points_in_gt[k] = flag.sum()
                     annotations['num_points_in_gt'] = num_points_in_gt
+                    # print(num_points_in_gt.shape)
+                if count_2d_pts_ratio:
+                    points = self.get_lidar(sample_idx)
+                    calib = self.get_calib(sample_idx)
+                    pts_img, _ = calib.lidar_to_img(points[:, :3])
+                    corners_lidar = box_utils.boxes_to_corners_3d(gt_boxes_lidar)
+                    # print(pts_img)
+                    # left_box, right_box = box_utils.separate_boxes_half(gt_boxes_img)
+                    left_corners, right_corners = box_utils.separate_boxes_to_corner_2d_half(gt_boxes_img)
+                    # print(left_box.shape) 
+                    # print(right_box.shape)
+                    pts_ratio = np.zeros(num_gt, dtype=np.float32)
+                    left_points = -np.ones(num_gt, dtype=np.int32)
+                    right_points = -np.ones(num_gt, dtype=np.int32)
+                    for k in range(num_objects):
+                        flag = box_utils.in_hull(points[:, 0:3], corners_lidar[k])
+                    for k in range(num_objects):
+                        flag = box_utils.in_hull(points[:, 0:3], corners_lidar[k])
 
+                        flag_left = box_utils.in_hull(pts_img, left_corners[k])
+                        flag_left = flag & flag_left
+                        num_points_left = flag_left.sum()
+                        left_points[k] = num_points_left
+
+                        flag_right = box_utils.in_hull(pts_img, right_corners[k])
+                        flag_right = flag & flag_right
+                        num_points_right = flag_right.sum()
+                        right_points[k] = num_points_right
+
+                        if num_points_right == 0 and num_points_left == 0:
+                            pts_ratio[k] = 0
+                        elif num_points_right >= num_points_left:
+                            pts_ratio[k] = num_points_left / num_points_right
+                        else:
+                            pts_ratio[k] = num_points_right / num_points_left 
+
+                        if np.isinf(pts_ratio[k]) or np.isnan(pts_ratio[k]):
+                            print(pts_ratio[k])
+                            exit()
+
+                    annotations['pts_ratio'] = pts_ratio
+                    annotations['l_points'] = left_points
+                    annotations['r_points'] = right_points
             return info
 
         sample_id_list = sample_id_list if sample_id_list is not None else self.sample_id_list
@@ -268,6 +311,7 @@ class KittiDataset(DatasetTemplate):
             sample_idx = info['point_cloud']['lidar_idx']
             points = self.get_lidar(sample_idx)
             annos = info['annos']
+            # print(annos.keys())
             names = annos['name']
             difficulty = annos['difficulty']
             bbox = annos['bbox']
@@ -292,7 +336,9 @@ class KittiDataset(DatasetTemplate):
                     db_path = str(filepath.relative_to(self.root_path))
                     db_info = {'name': names[i], 'path': db_path, 'image_idx': sample_idx, 'gt_idx': i,
                                'box3d_lidar': gt_boxes[i], 'num_points_in_gt': gt_points.shape[0],
-                               'difficulty': difficulty[i], 'bbox': bbox[i], 'score': annos['score'][i]}
+                               'difficulty': difficulty[i], 'bbox': bbox[i], 'score': annos['score'][i],
+                               'pts_ratio': annos['pts_ratio'][i], 'l_points': annos['l_points'][i],
+                               'r_points': annos['r_points'][i]}
                     if names[i] in all_db_infos:
                         all_db_infos[names[i]].append(db_info)
                     else:
@@ -387,6 +433,7 @@ class KittiDataset(DatasetTemplate):
             return None, {}
 
         from .kitti_object_eval_python import eval as kitti_eval
+        # from .kitti_object_eval_python import eval_distance as kitti_eval
 
         eval_det_annos = copy.deepcopy(det_annos)
         eval_gt_annos = [copy.deepcopy(info['annos'])
@@ -413,7 +460,8 @@ class KittiDataset(DatasetTemplate):
         img_shape = info['image']['image_shape']
         calib = self.get_calib(sample_idx)
         get_item_list = self.dataset_cfg.get('GET_ITEM_LIST', ['points'])
-
+        # print(get_item_list)
+        # exit()
         input_dict = {
             'frame_id': sample_idx,
             'calib': calib,
@@ -421,17 +469,21 @@ class KittiDataset(DatasetTemplate):
 
         if 'annos' in info:
             annos = info['annos']
+            # print(annos.keys())
+            # exit()
             annos = common_utils.drop_info_with_name(annos, name='DontCare')
             # annos = common_utils.drop_info_with_difficult(annos, difficulty=2)
             loc, dims, rots = annos['location'], annos['dimensions'], annos['rotation_y']
             gt_names = annos['name']
+            pts_ratio = annos['pts_ratio']
             gt_boxes_camera = np.concatenate(
                 [loc, dims, rots[..., np.newaxis]], axis=1).astype(np.float32)
             gt_boxes_lidar = box_utils.boxes3d_kitti_camera_to_lidar(
                 gt_boxes_camera, calib)
             input_dict.update({
                 'gt_names': gt_names,
-                'gt_boxes': gt_boxes_lidar
+                'gt_boxes': gt_boxes_lidar,
+                'pts_ratio': pts_ratio,
             })
             if "gt_boxes2d" in get_item_list:
                 input_dict['gt_boxes2d'] = annos["bbox"]
@@ -467,6 +519,48 @@ class KittiDataset(DatasetTemplate):
         data_dict['image_shape'] = img_shape
         return data_dict
 
+def data_collect(kitti_infos_train, save_path):
+    dist_np_filename = save_path / ('kitti_dist_np_pr_trainval_infos.pkl')
+    distance = np.array([])
+    numberofpoints = np.array([])
+    pts_ratio = np.array([])
+    c = np.array([])
+    bbox = np.array([])
+    # exit()
+    for i in range(len(kitti_infos_train)):
+        # print(kitti_infos_train[i]['annos'])
+        # print(kitti_infos_train[i].keys())
+        annos = kitti_infos_train[i]['annos']
+        # print(annos['pts_ratio'].shape)
+        keep_indices = [i for i, x in enumerate(annos['name']) if x == 'Car']
+        # print(keep_indices)
+        # print(kitti_infos_train[0]['annos']['gt_boxes_lidar'])
+        # print(kitti_infos_train[0]['annos']['gt_boxes_lidar'][keep_indices, 5])
+        # print(annos['gt_boxes_lidar'][keep_indices, 5])
+        # print(annos['difficulty'][keep_indices])
+        distance = np.append(distance, annos['location'][keep_indices, 2])
+        numberofpoints = np.append(numberofpoints, annos['num_points_in_gt'][keep_indices])
+        pts_ratio = np.append(pts_ratio, annos['pts_ratio'][keep_indices])
+        c = np.append(c, annos['difficulty'][keep_indices])
+        bbox = np.append(bbox, annos['bbox'][keep_indices])
+        # numberofpoints.append(annos['num_points_in_gt'][keep_indices])
+    # print(distance)
+    # print(numberofpoints)
+    # exit()
+    d=[]
+    d.append(distance)
+    d.append(numberofpoints)
+    d.append(c)
+    d.append(pts_ratio)
+    d.append(bbox)
+    # d = np.concatenate((distance, numberofpoints))
+    # print(d)
+    with open(dist_np_filename, 'wb') as f:
+        pickle.dump(d, f)
+    # print(distance.shape)
+    # print(numberofpoints.shape)
+    # print(c)
+    # print(c.shape)
 
 def create_kitti_infos(dataset_cfg, class_names, data_path, save_path, workers=4):
     dataset = KittiDataset(dataset_cfg=dataset_cfg,
@@ -474,7 +568,6 @@ def create_kitti_infos(dataset_cfg, class_names, data_path, save_path, workers=4
     train_split, val_split = 'train', 'val'
 
     train_filename = save_path / ('kitti_infos_%s.pkl' % train_split)
-    dist_np_filename = save_path / ('kitti_dist_np_infos.pkl')
     val_filename = save_path / ('kitti_infos_%s.pkl' % val_split)
     # trainval_filename = save_path / 'kitti_infos_trainval.pkl'
     test_filename = save_path / 'kitti_infos_test.pkl'
@@ -484,40 +577,11 @@ def create_kitti_infos(dataset_cfg, class_names, data_path, save_path, workers=4
     dataset.set_split(train_split)
     kitti_infos_train = dataset.get_infos(
         num_workers=workers, has_label=True, count_inside_pts=True)
-
     # print(len(kitti_infos_train))
-    distance = np.array([])
-    numberofpoints = np.array([])
-    c = np.array([])
-    for i in range(len(kitti_infos_train)):
-        # print(kitti_infos_train[i]['annos'])
-        # exit()
-        annos = kitti_infos_train[i]['annos']
-        keep_indices = [i for i, x in enumerate(annos['name']) if x == 'Car']
-        # print(keep_indices)
-        # print(kitti_infos_train[0]['annos']['gt_boxes_lidar'])
-        # print(kitti_infos_train[0]['annos']['gt_boxes_lidar'][keep_indices, 5])
-        # print(annos['gt_boxes_lidar'][keep_indices, 5])
-        # print(annos['difficulty'][keep_indices])
-        distance = np.append(distance, annos['location'][keep_indices, 2])
-        numberofpoints = np.append(numberofpoints, annos['num_points_in_gt'][keep_indices])
-        c = np.append(c, annos['difficulty'][keep_indices])
-        # numberofpoints.append(annos['num_points_in_gt'][keep_indices])
-    # print(distance)
-    # print(numberofpoints)
-    d=[]
-    d.append(distance)
-    d.append(numberofpoints)
-    d.append(c)
-    # d = np.concatenate((distance, numberofpoints))
-    # print(d)
-    with open(dist_np_filename, 'wb') as f:
-        pickle.dump(d, f)
-    print(distance.shape)
-    print(numberofpoints.shape)
-    print(c)
-    print(c.shape)
-    exit()
+
+    # data collection
+    # data_collect(kitti_infos_train, save_path)
+
     with open(train_filename, 'wb') as f:
         pickle.dump(kitti_infos_train, f)
     print('Kitti info train file is saved to %s' % train_filename)
@@ -539,9 +603,9 @@ def create_kitti_infos(dataset_cfg, class_names, data_path, save_path, workers=4
     #     pickle.dump(kitti_infos_test, f)
     # print('Kitti info test file is saved to %s' % test_filename)
 
-    print('---------------Start create groundtruth database for data augmentation---------------')
-    dataset.set_split(train_split)
-    dataset.create_groundtruth_database(train_filename, split=train_split)
+    # print('---------------Start create groundtruth database for data augmentation---------------')
+    # dataset.set_split(train_split)
+    # dataset.create_groundtruth_database(train_filename, split=train_split)
 
     print('---------------Data preparation Done---------------')
 

@@ -40,17 +40,73 @@ def boxes_to_corners_3d(boxes3d):
     Returns:
     """
     boxes3d, is_numpy = common_utils.check_numpy_to_torch(boxes3d)
-
     template = boxes3d.new_tensor((
         [1, 1, -1], [1, -1, -1], [-1, -1, -1], [-1, 1, -1],
         [1, 1, 1], [1, -1, 1], [-1, -1, 1], [-1, 1, 1],
     )) / 2
-
     corners3d = boxes3d[:, None, 3:6].repeat(1, 8, 1) * template[None, :, :]
     corners3d = common_utils.rotate_points_along_z(corners3d.view(-1, 8, 3), boxes3d[:, 6]).view(-1, 8, 3)
+    # print(corners3d.shape)
     corners3d += boxes3d[:, None, 0:3]
 
     return corners3d.numpy() if is_numpy else corners3d
+
+def separate_boxes_to_corner_2d_half(boxes2d):
+
+    boxes2d, is_numpy = common_utils.check_numpy_to_torch(boxes2d)
+
+    left_corners = []
+    right_corners = []
+
+
+    x_min, y_min, x_max, y_max = boxes2d[:, 0], boxes2d[:, 1], boxes2d[:, 2], boxes2d[:, 3]
+    # Calculate the center of the bounding box
+    center_x = (x_min + x_max) / 2
+
+    # Generate the corner coordinates for the left box
+    left_corner1 = torch.stack([x_min, y_min], dim=1)
+    left_corner2 = torch.stack([center_x, y_min], dim=1)
+    left_corner3 = torch.stack([center_x, y_max], dim=1)
+    left_corner4 = torch.stack([x_min, y_max], dim=1)
+    # Generate the corner coordinates for the right box
+    right_corner1 = torch.stack([center_x, y_min], dim=1)
+    right_corner2 = torch.stack([x_max, y_min], dim=1)
+    right_corner3 = torch.stack([x_max, y_max], dim=1)
+    right_corner4 = torch.stack([center_x, y_max], dim=1)
+    
+    left_corners_tensor = torch.stack([left_corner1, left_corner2, left_corner3, left_corner4], dim=1)
+    right_corners_tensor = torch.stack([right_corner1, right_corner2, right_corner3, right_corner4], dim=1)
+    # print(left_corners_tensor.shape)
+    # print(right_corners_tensor.shape)
+    # Return the corner coordinates for the left and right boxes as tensors
+    return left_corners_tensor.numpy(), right_corners_tensor.numpy()
+
+def separate_boxes_half(boxes2d):
+
+    boxes2d, is_numpy = common_utils.check_numpy_to_torch(boxes2d)
+    x_min, y_min, x_max, y_max = boxes2d[:, 0], boxes2d[:, 1], boxes2d[:, 2], boxes2d[:, 3]
+    center_x = (x_min + x_max) / 2
+
+    left_corner1 = torch.stack([x_min, y_min], dim=1)
+    left_corner3 = torch.stack([center_x, y_max], dim=1)
+
+    right_corner1 = torch.stack([center_x, y_min], dim=1)
+    right_corner3 = torch.stack([x_max, y_max], dim=1)
+
+    left_box = torch.stack([left_corner1, left_corner3], dim=1)
+    right_box = torch.stack([right_corner1, right_corner3], dim=1)
+
+    return left_box.numpy(), right_box.numpy()
+
+def check_in_box(points, boxes):
+    # print(points.shape)
+    flag_x = (points[:, 0] >= boxes[0][0]) & (points[:,0] <= boxes[1][0])
+    # print("flag_x: ", flag_x.shape)
+    flag_y = (points[:, 1] >= boxes[0][1]) & (points[:, 1] <= boxes[1][1])
+    # print("flag_y: ", flag_y.shape)
+    flag = flag_x & flag_y
+    # print(flag.shape)
+    return flag
 
 def corners_rect_to_camera(corners):
     """

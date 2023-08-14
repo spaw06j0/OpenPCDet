@@ -1,14 +1,14 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import math
 
 from ...utils import box_coder_utils, common_utils, loss_utils
 from .target_assigner.anchor_generator import AnchorGenerator
 from .target_assigner.atss_target_assigner import ATSSTargetAssigner
 from .target_assigner.axis_aligned_target_assigner import AxisAlignedTargetAssigner
+from .target_assigner.axis_aligned_target_assigner_selection import AxisAlignedTargetAssignerSelection
 
-class AnchorHeadTemplate(nn.Module):
+class AnchorSelectiveHeadTemplate(nn.Module):
     def __init__(self, model_cfg, num_class, class_names, grid_size, point_cloud_range, predict_boxes_when_training):
         super().__init__()
         self.model_cfg = model_cfg
@@ -16,7 +16,6 @@ class AnchorHeadTemplate(nn.Module):
         self.class_names = class_names
         self.predict_boxes_when_training = predict_boxes_when_training
         self.use_multihead = self.model_cfg.get('USE_MULTIHEAD', False)
-
         anchor_target_cfg = self.model_cfg.TARGET_ASSIGNER_CONFIG
         self.box_coder = getattr(box_coder_utils, anchor_target_cfg.BOX_CODER)(
             num_dir_bins=anchor_target_cfg.get('NUM_DIR_BINS', 6),
@@ -54,13 +53,20 @@ class AnchorHeadTemplate(nn.Module):
     def get_target_assigner(self, anchor_target_cfg):
         if anchor_target_cfg.NAME == 'ATSS':
             target_assigner = ATSSTargetAssigner(
-                model_cfg=self.model_cfg,
                 topk=anchor_target_cfg.TOPK,
                 box_coder=self.box_coder,
+                use_multihead=self.use_multihead,
                 match_height=anchor_target_cfg.MATCH_HEIGHT
             )
         elif anchor_target_cfg.NAME == 'AxisAlignedTargetAssigner':
             target_assigner = AxisAlignedTargetAssigner(
+                model_cfg=self.model_cfg,
+                class_names=self.class_names,
+                box_coder=self.box_coder,
+                match_height=anchor_target_cfg.MATCH_HEIGHT
+            )
+        elif anchor_target_cfg.NAME == 'AxisAlignedTargetAssignerSelection':
+            target_assigner = AxisAlignedTargetAssignerSelection(
                 model_cfg=self.model_cfg,
                 class_names=self.class_names,
                 box_coder=self.box_coder,
@@ -86,7 +92,16 @@ class AnchorHeadTemplate(nn.Module):
             loss_utils.WeightedCrossEntropyLoss()
         )
 
-    def assign_targets(self, gt_boxes):
+    def assign_importance(self, data_dict):
+        # print(data_dict.keys())
+        # print(data_dict['spatial_features_2d'].shape)
+        if 'importance' not in data_dict.keys():
+            data_dict['importance'] = nn.Parameter(5 * torch.ones(data_dict['gt_boxes'].shape[:2]))
+        # print(data_dict['gt_boxes'].shape[:2])
+        # print(data_dict['gt_boxes'])
+        return data_dict
+    
+    def assign_targets(self, gt_boxes, importance):
         """
         Args:
             gt_boxes: (B, M, 8)
@@ -94,7 +109,7 @@ class AnchorHeadTemplate(nn.Module):
 
         """
         targets_dict = self.target_assigner.assign_targets(
-            self.anchors, gt_boxes
+            self.anchors, gt_boxes, importance
         )
         return targets_dict
 
@@ -107,11 +122,13 @@ class AnchorHeadTemplate(nn.Module):
         negatives = box_cls_labels == 0
         negative_cls_weights = negatives * 1.0
         cls_weights = (negative_cls_weights + 1.0 * positives).float()
+        reg_weights = positives.float()
         if self.num_class == 1:
             # class agnostic
             box_cls_labels[positives] = 1
 
         pos_normalizer = positives.sum(1, keepdim=True).float()
+        reg_weights /= torch.clamp(pos_normalizer, min=1.0)
         cls_weights /= torch.clamp(pos_normalizer, min=1.0)
         cls_targets = box_cls_labels * cared.type_as(box_cls_labels)
         cls_targets = cls_targets.unsqueeze(dim=-1) # [8, 211200, 1]
@@ -124,39 +141,8 @@ class AnchorHeadTemplate(nn.Module):
         cls_preds = cls_preds.view(batch_size, -1, self.num_class) #[8, 211200, 3]
         one_hot_targets = one_hot_targets[..., 1:] # [8, 211200, 3]
 
-        ########################## adative loss ##########################
-        # norms = self.forward_ret_dict['norms']  # [bs, 1, 200, 176]
-        # cls_preds = cls_preds.clamp(-1+1e-3, 1-1e-3)    # cosine
-
-        # safe_norms = torch.clip(norms, min=0.001, max=100)
-        # safe_norms = safe_norms.clone().detach()
-        # # margin_scaler = 2 * (safe_norms - torch.min(safe_norms)) / (torch.max(safe_norms) - torch.min(safe_norms)) - 1
-        
-        # with torch.no_grad():
-        #     mean = safe_norms.mean().detach()
-        #     std = safe_norms.std().detach()
-
-        # margin_scaler = (safe_norms - mean) / (std + 1e-3)
-        # margin_scaler = margin_scaler * 0.333
-        # margin_scaler = torch.clip(margin_scaler, -1, 1)
-
-        # margin_scaler = torch.cat((margin_scaler, margin_scaler, margin_scaler, margin_scaler, margin_scaler, margin_scaler), dim=1)
-        # margin_scaler = margin_scaler.view(one_hot_targets.shape[0], one_hot_targets.shape[1])
-        # margin_scaler = torch.stack((margin_scaler, margin_scaler, margin_scaler), dim=-1)
-
-        # g_angular = 0.4*margin_scaler * -1 
-        # m_arc = one_hot_targets * g_angular
-        # theta = cls_preds.acos()
-        # theta_m = torch.clip(theta + m_arc, min=1e-3, max=math.pi-1e-3)
-        # cls_preds = theta_m.cos()
-
-        # g_add = 0.4 + (0.4 * margin_scaler)
-        # m_cos = one_hot_targets * g_add
-        # cls_preds = cls_preds - m_cos
-
-        # cls_preds = cls_preds * 64
-        #################################################################        
         cls_loss_src = self.cls_loss_func(cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
+        # print(cls_loss_src.shape)
         cls_loss = cls_loss_src.sum() / batch_size
         cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
         tb_dict = {
@@ -164,6 +150,44 @@ class AnchorHeadTemplate(nn.Module):
         }
         return cls_loss, tb_dict
 
+    def get_selective_cls_layer_loss(self):
+        cls_preds = self.forward_ret_dict['cls_preds'] # [8, 200, 176, 18]
+        box_cls_labels = self.forward_ret_dict['box_cls_labels'] # [8, 211200]
+        importance_masks = self.forward_ret_dict['importance_masks']
+        batch_size = int(cls_preds.shape[0])
+        cared = box_cls_labels >= 0  # [N, num_anchors]
+        positives = box_cls_labels > 0
+        negatives = box_cls_labels == 0
+        negative_cls_weights = negatives * 1.0
+        cls_weights = (negative_cls_weights + 1.0 * positives).float()
+        reg_weights = positives.float()
+        if self.num_class == 1:
+            # class agnostic
+            box_cls_labels[positives] = 1
+
+        pos_normalizer = positives.sum(1, keepdim=True).float()
+        reg_weights /= torch.clamp(pos_normalizer, min=1.0)
+        cls_weights /= torch.clamp(pos_normalizer, min=1.0)
+        cls_targets = box_cls_labels * cared.type_as(box_cls_labels)
+        cls_targets = cls_targets.unsqueeze(dim=-1) # [8, 211200, 1]
+        cls_targets = cls_targets.squeeze(dim=-1) # [8, 211200]
+        one_hot_targets = torch.zeros(
+            *list(cls_targets.shape), self.num_class + 1, dtype=cls_preds.dtype, device=cls_targets.device
+        )   # [8, 211200, 4]
+        one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
+        # [8, 211200, 4]
+        cls_preds = cls_preds.view(batch_size, -1, self.num_class) #[8, 211200, 3]
+        one_hot_targets = one_hot_targets[..., 1:] # [8, 211200, 3]
+        importance_masks = importance_masks.view(batch_size, -1, 1)
+        cls_loss_src = self.cls_loss_func(cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
+        cls_loss_src = importance_masks * cls_loss_src + (importance_masks-1) * (importance_masks-1)
+        cls_loss = cls_loss_src.sum() / batch_size
+        cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
+        tb_dict = {
+            'rpn_loss_cls': cls_loss.item()
+        }
+        return cls_loss, tb_dict
+    
     @staticmethod
     def add_sin_difference(boxes1, boxes2, dim=6):
         assert dim != -1
@@ -217,6 +241,68 @@ class AnchorHeadTemplate(nn.Module):
         # sin(a - b) = sinacosb-cosasinb
         box_preds_sin, reg_targets_sin = self.add_sin_difference(box_preds, box_reg_targets)
         loc_loss_src = self.reg_loss_func(box_preds_sin, reg_targets_sin, weights=reg_weights)  # [N, M]
+        # print(loc_loss_src.shape)
+        loc_loss = loc_loss_src.sum() / batch_size
+
+        loc_loss = loc_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
+        box_loss = loc_loss
+        tb_dict = {
+            'rpn_loss_loc': loc_loss.item()
+        }
+
+        if box_dir_cls_preds is not None:
+            dir_targets = self.get_direction_target(
+                anchors, box_reg_targets,
+                dir_offset=self.model_cfg.DIR_OFFSET,
+                num_bins=self.model_cfg.NUM_DIR_BINS
+            )
+
+            dir_logits = box_dir_cls_preds.view(batch_size, -1, self.model_cfg.NUM_DIR_BINS)
+            weights = positives.type_as(dir_logits)
+            weights /= torch.clamp(weights.sum(-1, keepdim=True), min=1.0)
+            dir_loss = self.dir_loss_func(dir_logits, dir_targets, weights=weights)
+            dir_loss = dir_loss.sum() / batch_size
+            dir_loss = dir_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['dir_weight']
+            box_loss += dir_loss
+            tb_dict['rpn_loss_dir'] = dir_loss.item()
+
+        return box_loss, tb_dict
+    
+    def get_selective_box_reg_layer_loss(self):
+
+        box_preds = self.forward_ret_dict['box_preds']
+        box_dir_cls_preds = self.forward_ret_dict.get('dir_cls_preds', None)
+        box_reg_targets = self.forward_ret_dict['box_reg_targets']
+        box_cls_labels = self.forward_ret_dict['box_cls_labels']
+        importance_masks = self.forward_ret_dict['importance_masks']
+        batch_size = int(box_preds.shape[0])
+
+        positives = box_cls_labels > 0
+        reg_weights = positives.float()
+        pos_normalizer = positives.sum(1, keepdim=True).float()
+        reg_weights /= torch.clamp(pos_normalizer, min=1.0)
+        if isinstance(self.anchors, list):
+            if self.use_multihead:
+                anchors = torch.cat(
+                    [anchor.permute(3, 4, 0, 1, 2, 5).contiguous().view(-1, anchor.shape[-1]) for anchor in
+                     self.anchors], dim=0)
+            else:
+                anchors = torch.cat(self.anchors, dim=-3)
+        else:
+            anchors = self.anchors
+        anchors = anchors.view(1, -1, anchors.shape[-1]).repeat(batch_size, 1, 1)
+        box_preds = box_preds.view(batch_size, -1,
+                                   box_preds.shape[-1] // self.num_anchors_per_location if not self.use_multihead else
+                                   box_preds.shape[-1])
+        # sin(a - b) = sinacosb-cosasinb
+        box_preds_sin, reg_targets_sin = self.add_sin_difference(box_preds, box_reg_targets)
+        loc_loss_src = self.reg_loss_func(box_preds_sin, reg_targets_sin, weights=reg_weights)  # [N, M]
+        print(importance_masks[positives].shape)
+        print(importance_masks[positives])
+        importance_masks = importance_masks.view(batch_size, -1, 1)
+
+        # weights need to be adjuested 
+        loc_loss_src = importance_masks * loc_loss_src + (importance_masks-1) * (importance_masks-1)
         loc_loss = loc_loss_src.sum() / batch_size
 
         loc_loss = loc_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
@@ -246,6 +332,15 @@ class AnchorHeadTemplate(nn.Module):
     def get_loss(self):
         cls_loss, tb_dict = self.get_cls_layer_loss()
         box_loss, tb_dict_box = self.get_box_reg_layer_loss()
+        tb_dict.update(tb_dict_box)
+        rpn_loss = cls_loss + box_loss
+
+        tb_dict['rpn_loss'] = rpn_loss.item()
+        return rpn_loss, tb_dict
+    
+    def get_selective_loss(self):
+        cls_loss, tb_dict = self.get_selective_cls_layer_loss()
+        box_loss, tb_dict_box = self.get_selective_box_reg_layer_loss()
         tb_dict.update(tb_dict_box)
         rpn_loss = cls_loss + box_loss
 

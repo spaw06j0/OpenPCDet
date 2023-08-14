@@ -7,8 +7,8 @@ from ...utils import box_coder_utils, common_utils, loss_utils
 from .target_assigner.anchor_generator import AnchorGenerator
 from .target_assigner.atss_target_assigner import ATSSTargetAssigner
 from .target_assigner.axis_aligned_target_assigner import AxisAlignedTargetAssigner
-
-class AnchorHeadTemplate(nn.Module):
+from .target_assigner.axis_aligned_target_assigner_pr import AxisAlignedTargetAssignerPR
+class AnchorHeadPRTemplate(nn.Module):
     def __init__(self, model_cfg, num_class, class_names, grid_size, point_cloud_range, predict_boxes_when_training):
         super().__init__()
         self.model_cfg = model_cfg
@@ -18,6 +18,7 @@ class AnchorHeadTemplate(nn.Module):
         self.use_multihead = self.model_cfg.get('USE_MULTIHEAD', False)
 
         anchor_target_cfg = self.model_cfg.TARGET_ASSIGNER_CONFIG
+        # print(anchor_target_cfg)
         self.box_coder = getattr(box_coder_utils, anchor_target_cfg.BOX_CODER)(
             num_dir_bins=anchor_target_cfg.get('NUM_DIR_BINS', 6),
             **anchor_target_cfg.get('BOX_CODER_CONFIG', {})
@@ -66,6 +67,13 @@ class AnchorHeadTemplate(nn.Module):
                 box_coder=self.box_coder,
                 match_height=anchor_target_cfg.MATCH_HEIGHT
             )
+        elif anchor_target_cfg.NAME == 'AxisAlignedTargetAssignerPR':
+            target_assigner = AxisAlignedTargetAssignerPR(
+                model_cfg=self.model_cfg,
+                class_names=self.class_names,
+                box_coder=self.box_coder,
+                match_height=anchor_target_cfg.MATCH_HEIGHT
+            )
         else:
             raise NotImplementedError
         return target_assigner
@@ -86,24 +94,33 @@ class AnchorHeadTemplate(nn.Module):
             loss_utils.WeightedCrossEntropyLoss()
         )
 
-    def assign_targets(self, gt_boxes):
+    def assign_targets(self, gt_boxes, pts_ratio):
         """
         Args:
             gt_boxes: (B, M, 8)
         Returns:
 
         """
+        # print(gt_boxes.shape)
+        # print(pts_ratio.shape)
+        # exit()
         targets_dict = self.target_assigner.assign_targets(
-            self.anchors, gt_boxes
+            self.anchors, gt_boxes, pts_ratio
         )
         return targets_dict
 
     def get_cls_layer_loss(self):
+        # print(self.forward_ret_dict.keys())
         cls_preds = self.forward_ret_dict['cls_preds'] # [8, 200, 176, 18]
         box_cls_labels = self.forward_ret_dict['box_cls_labels'] # [8, 211200]
+        pts_ratio_weight = self.forward_ret_dict['pts_ratio_weight'] + 0.5 # [8, 211200]
+        
+        # print(pts_ratio_weight.max())
+        # print(pts_ratio_weight.min())
         batch_size = int(cls_preds.shape[0])
         cared = box_cls_labels >= 0  # [N, num_anchors]
         positives = box_cls_labels > 0
+
         negatives = box_cls_labels == 0
         negative_cls_weights = negatives * 1.0
         cls_weights = (negative_cls_weights + 1.0 * positives).float()
@@ -113,6 +130,7 @@ class AnchorHeadTemplate(nn.Module):
 
         pos_normalizer = positives.sum(1, keepdim=True).float()
         cls_weights /= torch.clamp(pos_normalizer, min=1.0)
+
         cls_targets = box_cls_labels * cared.type_as(box_cls_labels)
         cls_targets = cls_targets.unsqueeze(dim=-1) # [8, 211200, 1]
         cls_targets = cls_targets.squeeze(dim=-1) # [8, 211200]
@@ -124,39 +142,14 @@ class AnchorHeadTemplate(nn.Module):
         cls_preds = cls_preds.view(batch_size, -1, self.num_class) #[8, 211200, 3]
         one_hot_targets = one_hot_targets[..., 1:] # [8, 211200, 3]
 
-        ########################## adative loss ##########################
-        # norms = self.forward_ret_dict['norms']  # [bs, 1, 200, 176]
-        # cls_preds = cls_preds.clamp(-1+1e-3, 1-1e-3)    # cosine
-
-        # safe_norms = torch.clip(norms, min=0.001, max=100)
-        # safe_norms = safe_norms.clone().detach()
-        # # margin_scaler = 2 * (safe_norms - torch.min(safe_norms)) / (torch.max(safe_norms) - torch.min(safe_norms)) - 1
-        
-        # with torch.no_grad():
-        #     mean = safe_norms.mean().detach()
-        #     std = safe_norms.std().detach()
-
-        # margin_scaler = (safe_norms - mean) / (std + 1e-3)
-        # margin_scaler = margin_scaler * 0.333
-        # margin_scaler = torch.clip(margin_scaler, -1, 1)
-
-        # margin_scaler = torch.cat((margin_scaler, margin_scaler, margin_scaler, margin_scaler, margin_scaler, margin_scaler), dim=1)
-        # margin_scaler = margin_scaler.view(one_hot_targets.shape[0], one_hot_targets.shape[1])
-        # margin_scaler = torch.stack((margin_scaler, margin_scaler, margin_scaler), dim=-1)
-
-        # g_angular = 0.4*margin_scaler * -1 
-        # m_arc = one_hot_targets * g_angular
-        # theta = cls_preds.acos()
-        # theta_m = torch.clip(theta + m_arc, min=1e-3, max=math.pi-1e-3)
-        # cls_preds = theta_m.cos()
-
-        # g_add = 0.4 + (0.4 * margin_scaler)
-        # m_cos = one_hot_targets * g_add
-        # cls_preds = cls_preds - m_cos
-
-        # cls_preds = cls_preds * 64
-        #################################################################        
         cls_loss_src = self.cls_loss_func(cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
+
+        # reweight by pts_ratio:
+        # print(pts_ratio_weight.min())
+        # print(pts_ratio_weight.max())
+        # pts_ratio_weight = pts_ratio_weight.unsqueeze(dim=-1)
+        # cls_loss_src = cls_loss_src * pts_ratio_weight
+
         cls_loss = cls_loss_src.sum() / batch_size
         cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
         tb_dict = {
@@ -194,13 +187,17 @@ class AnchorHeadTemplate(nn.Module):
         box_dir_cls_preds = self.forward_ret_dict.get('dir_cls_preds', None)
         box_reg_targets = self.forward_ret_dict['box_reg_targets']
         box_cls_labels = self.forward_ret_dict['box_cls_labels']
+
+        pts_ratio_weight = self.forward_ret_dict['pts_ratio_weight'] + 0.5 # [8, 211200]
         batch_size = int(box_preds.shape[0])
 
         positives = box_cls_labels > 0
-        reg_weights = positives.float()
+        # reg_weights = positives.float()
+        reg_weights = self.forward_ret_dict['reg_weights']
+        # print(reg_weights[positives])
         pos_normalizer = positives.sum(1, keepdim=True).float()
+        # print(pos_normalizer)
         reg_weights /= torch.clamp(pos_normalizer, min=1.0)
-
         if isinstance(self.anchors, list):
             if self.use_multihead:
                 anchors = torch.cat(
@@ -217,6 +214,10 @@ class AnchorHeadTemplate(nn.Module):
         # sin(a - b) = sinacosb-cosasinb
         box_preds_sin, reg_targets_sin = self.add_sin_difference(box_preds, box_reg_targets)
         loc_loss_src = self.reg_loss_func(box_preds_sin, reg_targets_sin, weights=reg_weights)  # [N, M]
+
+        # reweight by pts_ratio:
+        # pts_ratio_weight = pts_ratio_weight.unsqueeze(dim=-1)
+        # loc_loss_src = loc_loss_src * pts_ratio_weight
         loc_loss = loc_loss_src.sum() / batch_size
 
         loc_loss = loc_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']

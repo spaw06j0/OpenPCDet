@@ -2,21 +2,17 @@ CLASS_NAMES: ['Car', "Pedestrian", "Cyclist"]
 
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/kitti_dataset.yaml
-    GET_ITEM_LIST: ["images", "points", "calib_matricies", "gt_boxes2d"]
     DATA_AUGMENTOR:
         DISABLE_AUG_LIST: ['placeholder']
         AUG_CONFIG_LIST:
             - NAME: gt_sampling
-
-              # AUG_WITH_IMAGE: True # use PC-Image Aug
-              IMG_AUG_TYPE: kitti
-
               USE_ROAD_PLANE: True
               DB_INFO_PATH:
                   - kitti_dbinfos_train.pkl
               PREPARE: {
                  filter_by_min_points: ['Car:5', "Pedestrian:5", "Cyclist:5"],
                  filter_by_difficulty: [-1],
+                 filter_by_pr: [0.25],
               }
 
               SAMPLE_GROUPS: ['Car:15', "Pedestrian:10", "Cyclist:10"]
@@ -41,9 +37,7 @@ MODEL:
         NAME: MeanVFE
 
     BACKBONE_3D:
-        NAME: VoxelBackBone8xFocal
-        USE_IMG: True
-        IMG_PRETRAIN: "../checkpoints/deeplabv3_resnet50_coco-cd0a2569.pth"
+        NAME: VoxelBackBone8x
 
     MAP_TO_BEV:
         NAME: HeightCompression

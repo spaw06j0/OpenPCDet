@@ -5,7 +5,7 @@ from ....ops.iou3d_nms import iou3d_nms_utils
 from ....utils import box_utils
 
 
-class AxisAlignedTargetAssigner(object):
+class AxisAlignedTargetAssignerSelection(object):
     def __init__(self, model_cfg, class_names, box_coder, match_height=False):
         super().__init__()
 
@@ -34,7 +34,7 @@ class AxisAlignedTargetAssigner(object):
         #         for idx, name in enumerate(rpn_head_cfg['HEAD_CLS_NAME']):
         #             self.gt_remapping[name] = idx + 1
 
-    def assign_targets(self, all_anchors, gt_boxes_with_classes):
+    def assign_targets(self, all_anchors, gt_boxes_with_classes, importance):
         """
         Args:
             all_anchors: [(N, 7), ...]
@@ -46,18 +46,20 @@ class AxisAlignedTargetAssigner(object):
         bbox_targets = []
         cls_labels = []
         reg_weights = []
-        anchor_iou = []
+        importance_masks = []
         batch_size = gt_boxes_with_classes.shape[0]
         gt_classes = gt_boxes_with_classes[:, :, -1]
-        gt_boxes = gt_boxes_with_classes[:, :, :-1]
+        gt_boxes = gt_boxes_with_classes[:, :, :-1]  
+
         for k in range(batch_size):
             cur_gt = gt_boxes[k]
+            cur_importance = importance[k]
             cnt = cur_gt.__len__() - 1
             while cnt > 0 and cur_gt[cnt].sum() == 0:
                 cnt -= 1
             cur_gt = cur_gt[:cnt + 1]
+            cur_importance = cur_importance[:cnt + 1]
             cur_gt_classes = gt_classes[k][:cnt + 1].int()
-
             target_list = []
             for anchor_class_name, anchors in zip(self.anchor_class_names, all_anchors):
                 if cur_gt_classes.shape[0] > 1:
@@ -80,11 +82,12 @@ class AxisAlignedTargetAssigner(object):
                     feature_map_size = anchors.shape[:3]
                     anchors = anchors.view(-1, anchors.shape[-1])
                     selected_classes = cur_gt_classes[mask]
-
+                    selected_importance = cur_importance[mask]
                 single_target = self.assign_targets_single(
                     anchors,
                     cur_gt[mask],
                     gt_classes=selected_classes,
+                    selected_importance=selected_importance,
                     matched_threshold=self.matched_thresholds[anchor_class_name],
                     unmatched_threshold=self.unmatched_thresholds[anchor_class_name]
                 )
@@ -101,19 +104,12 @@ class AxisAlignedTargetAssigner(object):
                 target_dict['box_cls_labels'] = torch.cat(target_dict['box_cls_labels'], dim=0).view(-1)
                 target_dict['reg_weights'] = torch.cat(target_dict['reg_weights'], dim=0).view(-1)
             else:
-                # if self.adaptive == 'AnchorAdaptiveHead':
-                #     target_dict = {
-                #         'box_cls_labels': [t['box_cls_labels'].view(*feature_map_size, -1) for t in target_list],
-                #         'box_reg_targets': [t['box_reg_targets'].view(*feature_map_size, -1, self.box_coder.code_size)
-                #                             for t in target_list],
-                #         'reg_weights': [t['reg_weights'].view(*feature_map_size, -1) for t in target_list],
-                #         'anchor_iou': [t['anchor_iou'].view(*feature_map_size, -1) for t in target_list]
-                #     }
                 target_dict = {
                     'box_cls_labels': [t['box_cls_labels'].view(*feature_map_size, -1) for t in target_list],
                     'box_reg_targets': [t['box_reg_targets'].view(*feature_map_size, -1, self.box_coder.code_size)
                                         for t in target_list],
                     'reg_weights': [t['reg_weights'].view(*feature_map_size, -1) for t in target_list],
+                    'importance_mask': [t['importance_mask'].view(*feature_map_size, -1) for t in target_list],
                 }
                 target_dict['box_reg_targets'] = torch.cat(
                     target_dict['box_reg_targets'], dim=-2
@@ -121,41 +117,31 @@ class AxisAlignedTargetAssigner(object):
 
                 target_dict['box_cls_labels'] = torch.cat(target_dict['box_cls_labels'], dim=-1).view(-1)
                 target_dict['reg_weights'] = torch.cat(target_dict['reg_weights'], dim=-1).view(-1)
-                # if self.adaptive == 'AnchorAdaptiveHead':
-                #     target_dict['anchor_iou'] = torch.cat(target_dict['anchor_iou'], dim=-1).view(-1)
+                target_dict['importance_mask'] = torch.cat(target_dict['importance_mask'], dim=-1).view(-1)
 
             bbox_targets.append(target_dict['box_reg_targets'])
             cls_labels.append(target_dict['box_cls_labels'])
             reg_weights.append(target_dict['reg_weights'])
-            # if self.adaptive == 'AnchorAdaptiveHead':
-            #     anchor_iou.append(target_dict['anchor_iou'])  
+            importance_masks.append(target_dict['importance_mask'])
 
         bbox_targets = torch.stack(bbox_targets, dim=0)
-
         cls_labels = torch.stack(cls_labels, dim=0)
         reg_weights = torch.stack(reg_weights, dim=0)
-        # if self.adaptive == 'AnchorAdaptiveHead':
-        #     anchor_iou = torch.stack(anchor_iou, dim=0)
-        #     all_targets_dict = {
-        #         'box_cls_labels': cls_labels,
-        #         'box_reg_targets': bbox_targets,
-        #         'reg_weights': reg_weights,
-        #         'anchor_iou': anchor_iou
-
-        #     }
+        importance_masks = torch.stack(importance_masks, dim=0)
+        
         all_targets_dict = {
             'box_cls_labels': cls_labels,
             'box_reg_targets': bbox_targets,
             'reg_weights': reg_weights,
+            'importance_masks': importance_masks,
 
         }
         return all_targets_dict
 
-    def assign_targets_single(self, anchors, gt_boxes, gt_classes, matched_threshold=0.6, unmatched_threshold=0.45):
+    def assign_targets_single(self, anchors, gt_boxes, gt_classes, selected_importance, matched_threshold=0.6, unmatched_threshold=0.45):
 
         num_anchors = anchors.shape[0]
         num_gt = gt_boxes.shape[0]
-
         labels = torch.ones((num_anchors,), dtype=torch.int32, device=anchors.device) * -1
         gt_ids = torch.ones((num_anchors,), dtype=torch.int32, device=anchors.device) * -1
         gt_iou = torch.zeros((num_anchors,), dtype=torch.int32, device=anchors.device)
@@ -183,9 +169,12 @@ class AxisAlignedTargetAssigner(object):
 
             anchors_with_max_overlap = (anchor_by_gt_overlap == gt_to_anchor_max).nonzero()[:, 0]
             gt_inds_force = anchor_to_gt_argmax[anchors_with_max_overlap]
+            # print("gt.shape: ", gt_classes.shape)
+            # print(gt_inds_force.shape)
+            # print(anchors_with_max_overlap.shape)
             labels[anchors_with_max_overlap] = gt_classes[gt_inds_force]
+            # print("labels.shape: ", labels.shape)
             gt_ids[anchors_with_max_overlap] = gt_inds_force.int()
-
             pos_inds = anchor_to_gt_max >= matched_threshold
             gt_inds_over_thresh = anchor_to_gt_argmax[pos_inds]
             labels[pos_inds] = gt_classes[gt_inds_over_thresh]
@@ -217,11 +206,13 @@ class AxisAlignedTargetAssigner(object):
                 labels[anchors_with_max_overlap] = gt_classes[gt_inds_force]
 
         bbox_targets = anchors.new_zeros((num_anchors, self.box_coder.code_size))
+        importance_mask = torch.ones((num_anchors,), dtype=torch.float, device=anchors.device)
         if len(gt_boxes) > 0 and anchors.shape[0] > 0:
             fg_gt_boxes = gt_boxes[anchor_to_gt_argmax[fg_inds], :]
+            fg_importance = selected_importance[anchor_to_gt_argmax[fg_inds]]
             fg_anchors = anchors[fg_inds, :]
             bbox_targets[fg_inds, :] = self.box_coder.encode_torch(fg_gt_boxes, fg_anchors)
-
+            importance_mask[fg_inds] = fg_importance.cuda()
         reg_weights = anchors.new_zeros((num_anchors,))
 
         if self.norm_by_num_examples:
@@ -230,16 +221,11 @@ class AxisAlignedTargetAssigner(object):
             reg_weights[labels > 0] = 1.0 / num_examples
         else:
             reg_weights[labels > 0] = 1.0
-        # if self.adaptive == 'AnchorAdaptiveHead':
-        #     ret_dict = {
-        #         'box_cls_labels': labels,
-        #         'box_reg_targets': bbox_targets,
-        #         'reg_weights': reg_weights,
-        #         'anchor_iou': gt_iou,
-        #     }
+
         ret_dict = {
             'box_cls_labels': labels,
             'box_reg_targets': bbox_targets,
             'reg_weights': reg_weights,
+            'importance_mask': importance_mask,
         }
         return ret_dict

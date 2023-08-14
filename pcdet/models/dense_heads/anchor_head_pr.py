@@ -2,10 +2,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import Parameter
-from .anchor_head_template import AnchorHeadTemplate
-# from .head import AdaFace
+from .anchor_head_pr_template import AnchorHeadPRTemplate
 
-class AnchorHeadSingle(AnchorHeadTemplate):
+class AnchorHeadPR(AnchorHeadPRTemplate):
     def __init__(self, model_cfg, input_channels, num_class, class_names, grid_size, point_cloud_range,
                  predict_boxes_when_training=True, **kwargs):
         super().__init__(
@@ -20,12 +19,6 @@ class AnchorHeadSingle(AnchorHeadTemplate):
             input_channels, self.num_anchors_per_location * self.num_class,
             kernel_size=1
         )
-
-        # adaptive:
-        # self.conv_cls = torch.nn.utils.weight_norm(nn.Conv2d(
-        #     input_channels, self.num_anchors_per_location * self.num_class,
-        #     kernel_size=1, bias=False
-        # ))
 
         self.conv_box = nn.Conv2d(
             input_channels, self.num_anchors_per_location * self.box_coder.code_size,
@@ -49,13 +42,10 @@ class AnchorHeadSingle(AnchorHeadTemplate):
         nn.init.normal_(self.conv_box.weight, mean=0, std=0.001)
 
     def forward(self, data_dict):
+        # if (torch.isnan(data_dict['pts_ratio']).any()):
+        #     print("anchor_head: pts_ratio:", data_dict['pts_ratio'])
+        #     exit()
         spatial_features_2d = data_dict['spatial_features_2d']
-        # print(spatial_features_2d.shape)
-
-        # norm:
-        # norms = torch.norm(spatial_features_2d, 2, 1, keepdim=True)
-        # # print(norms.shape)
-        # normalized_spatial_features_2d = spatial_features_2d / norms
 
         cls_preds = self.conv_cls(spatial_features_2d)
         box_preds = self.conv_box(spatial_features_2d)
@@ -73,13 +63,15 @@ class AnchorHeadSingle(AnchorHeadTemplate):
             self.forward_ret_dict['dir_cls_preds'] = dir_cls_preds
         else:
             dir_cls_preds = None
-
+        # print(data_dict.keys())
+        # exit()
         if self.training:
             targets_dict = self.assign_targets(
-                gt_boxes=data_dict['gt_boxes']
+                gt_boxes=data_dict['gt_boxes'],
+                pts_ratio=data_dict['pts_ratio']
             )
             self.forward_ret_dict.update(targets_dict)
-
+        # print(targets_dict.keys())
         if not self.training or self.predict_boxes_when_training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
                 batch_size=data_dict['batch_size'],
@@ -88,5 +80,6 @@ class AnchorHeadSingle(AnchorHeadTemplate):
             data_dict['batch_cls_preds'] = batch_cls_preds
             data_dict['batch_box_preds'] = batch_box_preds
             data_dict['cls_preds_normalized'] = False
+        # print(data_dict.keys())
         # print(data_dict['batch_cls_preds'].shape)
         return data_dict

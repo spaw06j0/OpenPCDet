@@ -89,6 +89,8 @@ class DataProcessor(object):
                 use_center_to_filter=config.get('USE_CENTER_TO_FILTER', True)
             )
             data_dict['gt_boxes'] = data_dict['gt_boxes'][mask]
+            if data_dict.get('pts_ratio', None) is not None:
+                data_dict['pts_ratio'] = data_dict['pts_ratio'][mask]
         return data_dict
 
     def shuffle_points(self, data_dict=None, config=None):

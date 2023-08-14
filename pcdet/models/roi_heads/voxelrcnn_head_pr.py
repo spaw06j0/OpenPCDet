@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 from ...ops.pointnet2.pointnet2_stack import voxel_pool_modules as voxelpool_stack_modules
 from ...utils import common_utils
-from .roi_head_template import RoIHeadTemplate
+from .roi_head_pr_template import RoIHeadPRTemplate
 import torch.nn.functional as F
 
-class VoxelRCNNHead(RoIHeadTemplate):
+class VoxelRCNNPRHead(RoIHeadPRTemplate):
     def __init__(self, backbone_channels, model_cfg, point_cloud_range, voxel_size, num_class=1, **kwargs):
         super().__init__(num_class=num_class, model_cfg=model_cfg)
         self.model_cfg = model_cfg
@@ -83,17 +83,17 @@ class VoxelRCNNHead(RoIHeadTemplate):
         self.reg_fc_layers = nn.Sequential(*reg_fc_list)
         self.reg_pred_layer = nn.Linear(pre_channel, self.box_coder.code_size * self.num_class, bias=True)
 
-        # if self.model_cfg.get("IOU_FC", False):
-        #     iou_fc_list = []
-        #     for k in range(0, self.model_cfg.IOU_FC.__len__()):
-        #         iou_fc_list.extend([
-        #             nn.Linear(pre_channel, self.model_cfg.REG_FC[k], bias=False),
-        #             nn.BatchNorm1d(self.model_cfg.REG_FC[k]),
-        #             nn.ReLU()
-        #         ])
-        #     pre_channel = self.model_cfg.IOU_FC[k]
-        #     self.iou_fc_layers = nn.Sequential(*iou_fc_list)
-        #     self.iou_pred_layers = nn.Linear(pre_channel, 1, bias=True)
+        if self.model_cfg.get("IOU_FC", False):
+            iou_fc_list = []
+            for k in range(0, self.model_cfg.IOU_FC.__len__()):
+                iou_fc_list.extend([
+                    nn.Linear(pre_channel, self.model_cfg.REG_FC[k], bias=False),
+                    nn.BatchNorm1d(self.model_cfg.REG_FC[k]),
+                    nn.ReLU()
+                ])
+            pre_channel = self.model_cfg.IOU_FC[k]
+            self.iou_fc_layers = nn.Sequential(*iou_fc_list)
+            self.iou_pred_layers = nn.Linear(pre_channel, 1, bias=True)
 
 
         self.init_weights()
@@ -113,13 +113,13 @@ class VoxelRCNNHead(RoIHeadTemplate):
             nn.init.constant_(self.cls_pred_layer.bias, 0)
         nn.init.normal_(self.reg_pred_layer.weight, mean=0, std=0.001)
         nn.init.constant_(self.reg_pred_layer.bias, 0)
-        # if self.model_cfg.get("IOU_FC", False):
-        #     for m in self.iou_fc_layers.modules():
-        #         if isinstance(m, nn.Linear):
-        #             init_func(m.weight)
-        #             if m.bias is not None:
-        #                 nn.init.constant_(m.bias, 0)
-        #     nn.init.normal_(self.iou_pred_layers.weight, 0, 0.001)
+        if self.model_cfg.get("IOU_FC", False):
+            for m in self.iou_fc_layers.modules():
+                if isinstance(m, nn.Linear):
+                    init_func(m.weight)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+            nn.init.normal_(self.iou_pred_layers.weight, 0, 0.001)
 
     # def _init_weights(self):
     #     init_func = nn.init.xavier_normal_
@@ -249,7 +249,6 @@ class VoxelRCNNHead(RoIHeadTemplate):
         :param input_data: input dict
         :return:
         """
-
         targets_dict = self.proposal_layer(
             batch_dict, nms_config=self.model_cfg.NMS_CONFIG['TRAIN' if self.training else 'TEST']
         )
@@ -267,13 +266,12 @@ class VoxelRCNNHead(RoIHeadTemplate):
         if self.model_cfg.FEATURE_NORM:
             rcnn_cls = self.cls_pred_layer(F.normalize(self.cls_fc_layers(shared_features), dim=1))
         else:
-            # print("Hereeeeeeeeeeeeeeeeeeeeeeee")
             rcnn_cls = self.cls_pred_layer(self.cls_fc_layers(shared_features))
 
         rcnn_reg = self.reg_pred_layer(self.reg_fc_layers(shared_features))
 
-        # if self.model_cfg.get("IOU_FC", False):
-        #     rcnn_iou = self.iou_pred_layers(self.iou_fc_layers(shared_features))
+        if self.model_cfg.get("IOU_FC", False):
+            rcnn_iou = self.iou_pred_layers(self.iou_fc_layers(shared_features))
         # print("rcnn_cls shape: ", rcnn_cls.shape)
         # feature_norm
         # last_layer_features = maxpooled_features[:, :, 2]
@@ -306,7 +304,6 @@ class VoxelRCNNHead(RoIHeadTemplate):
             if self.model_cfg.get("IOU_FC", False):
                 targets_dict['rcnn_iou'] = rcnn_iou
             if self.model_cfg.FEATURE_NORM:
-                # print("has feature_norm!!!!!!!!!!!!!!!")
                 targets_dict['feature_norm'] = feature_norm
             self.forward_ret_dict = targets_dict
 

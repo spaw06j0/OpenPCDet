@@ -24,7 +24,7 @@ class ResidualCoder(object):
 
         xa, ya, za, dxa, dya, dza, ra, *cas = torch.split(anchors, 1, dim=-1)
         xg, yg, zg, dxg, dyg, dzg, rg, *cgs = torch.split(boxes, 1, dim=-1)
-
+        
         diagonal = torch.sqrt(dxa ** 2 + dya ** 2)
         xt = (xg - xa) / diagonal
         yt = (yg - ya) / diagonal
@@ -38,7 +38,6 @@ class ResidualCoder(object):
             rts = [rt_cos, rt_sin]
         else:
             rts = [rg - ra]
-
         cts = [g - a for g, a in zip(cgs, cas)]
         return torch.cat([xt, yt, zt, dxt, dyt, dzt, *rts, *cts], dim=-1)
 

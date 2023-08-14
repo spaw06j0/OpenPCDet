@@ -110,6 +110,18 @@ class DataBaseSampler(object):
                 self.logger.info('Database filter by difficulty %s: %d => %d' % (key, pre_len, len(new_db_infos[key])))
         return new_db_infos
 
+    def filter_by_pr(self, db_infos, removed_ratio):
+        new_db_infos = {}
+        for key, dinfos in db_infos.items():
+            pre_len = len(dinfos)
+            new_db_infos[key] =[
+                info for info in dinfos
+                if info['pts_ratio'] > removed_ratio 
+            ]
+            if self.logger is not None:
+                self.logger.info('Database filter by pr %s: %d => %d' % (key, pre_len, len(new_db_infos[key])))
+        return new_db_infos
+
     def filter_by_min_points(self, db_infos, min_gt_points_list):
         for name_num in min_gt_points_list:
             name, min_num = name_num.split(':')
@@ -366,6 +378,10 @@ class DataBaseSampler(object):
         gt_boxes_mask = data_dict['gt_boxes_mask']
         gt_boxes = data_dict['gt_boxes'][gt_boxes_mask]
         gt_names = data_dict['gt_names'][gt_boxes_mask]
+        pts_ratio = data_dict['pts_ratio'][gt_boxes_mask]
+        if (np.isnan(pts_ratio).any()):
+            print("add_sampled: pts_ratio:", pts_ratio)
+            exit()
         points = data_dict['points']
         if self.sampler_cfg.get('USE_ROAD_PLANE', False) and mv_height is None:
             sampled_gt_boxes, mv_height = self.put_boxes_on_road_planes(
@@ -410,10 +426,12 @@ class DataBaseSampler(object):
                 )
 
             obj_points_list.append(obj_points)
-
+        # print(total_valid_sampled_dict)
         obj_points = np.concatenate(obj_points_list, axis=0)
         sampled_gt_names = np.array([x['name'] for x in total_valid_sampled_dict])
-
+        sampled_pts_ratio = np.array([x['pts_ratio'] for x in total_valid_sampled_dict])
+        if (np.isnan(sampled_pts_ratio).any()):
+            sampled_pts_ratio[np.isnan(sampled_pts_ratio)] = 0
         if self.sampler_cfg.get('FILTER_OBJ_POINTS_BY_TIMESTAMP', False) or obj_points.shape[-1] != points.shape[-1]:
             if self.sampler_cfg.get('FILTER_OBJ_POINTS_BY_TIMESTAMP', False):
                 min_time = min(self.sampler_cfg.TIME_RANGE[0], self.sampler_cfg.TIME_RANGE[1])
@@ -433,10 +451,14 @@ class DataBaseSampler(object):
         points = np.concatenate([obj_points[:, :points.shape[-1]], points], axis=0)
         gt_names = np.concatenate([gt_names, sampled_gt_names], axis=0)
         gt_boxes = np.concatenate([gt_boxes, sampled_gt_boxes], axis=0)
+        pts_ratio = np.concatenate([pts_ratio, sampled_pts_ratio], axis=0)
         data_dict['gt_boxes'] = gt_boxes
         data_dict['gt_names'] = gt_names
+        data_dict['pts_ratio'] = pts_ratio
+        if (np.isnan(pts_ratio).any()):
+            print("add_sampled_after: pts_ratio:", pts_ratio)
+            exit()
         data_dict['points'] = points
-
         if self.img_aug_type is not None:
             data_dict = self.copy_paste_to_image(img_aug_gt_dict, data_dict, points)
 
@@ -497,6 +519,12 @@ class DataBaseSampler(object):
             data_dict = self.add_sampled_boxes_to_scene(
                 data_dict, sampled_gt_boxes, total_valid_sampled_dict, sampled_mv_height, sampled_gt_boxes2d
             )
-
+        # print(data_dict['gt_boxes'].shape)
+        # print(data_dict['pts_ratio'].shape)
+        # print(data_dict['pts_ratio'].max())
+        # print(data_dict['pts_ratio'].min())
+        if (np.isnan(data_dict['pts_ratio']).any()):
+            print("after data sampler: pts_ratio:", data_dict['pts_ratio'])
+            exit()
         data_dict.pop('gt_boxes_mask')
         return data_dict
