@@ -107,8 +107,10 @@ def repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir
                       % (wait_second, total_time * 1.0 / 60, args.max_waiting_mins, ckpt_dir), end='', flush=True)
             time.sleep(wait_second)
             total_time += 30
-            if total_time > args.max_waiting_mins * 60 and (first_eval is False):
+            if total_time > args.max_waiting_mins * 0 and (first_eval is False):
                 break
+            # if total_time > args.max_waiting_mins * 60 and (first_eval is False):
+            #     break
             continue
 
         total_time = 0

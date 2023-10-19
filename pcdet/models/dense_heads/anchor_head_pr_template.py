@@ -147,8 +147,8 @@ class AnchorHeadPRTemplate(nn.Module):
         # reweight by pts_ratio:
         # print(pts_ratio_weight.min())
         # print(pts_ratio_weight.max())
-        # pts_ratio_weight = pts_ratio_weight.unsqueeze(dim=-1)
-        # cls_loss_src = cls_loss_src * pts_ratio_weight
+        pts_ratio_weight = pts_ratio_weight.unsqueeze(dim=-1)
+        cls_loss_src = cls_loss_src * pts_ratio_weight
 
         cls_loss = cls_loss_src.sum() / batch_size
         cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
@@ -218,8 +218,8 @@ class AnchorHeadPRTemplate(nn.Module):
         # reweight by pts_ratio:
         # pts_ratio_weight = pts_ratio_weight.unsqueeze(dim=-1)
         # loc_loss_src = loc_loss_src * pts_ratio_weight
+        
         loc_loss = loc_loss_src.sum() / batch_size
-
         loc_loss = loc_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
         box_loss = loc_loss
         tb_dict = {

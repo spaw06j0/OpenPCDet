@@ -519,10 +519,6 @@ class DataBaseSampler(object):
             data_dict = self.add_sampled_boxes_to_scene(
                 data_dict, sampled_gt_boxes, total_valid_sampled_dict, sampled_mv_height, sampled_gt_boxes2d
             )
-        # print(data_dict['gt_boxes'].shape)
-        # print(data_dict['pts_ratio'].shape)
-        # print(data_dict['pts_ratio'].max())
-        # print(data_dict['pts_ratio'].min())
         if (np.isnan(data_dict['pts_ratio']).any()):
             print("after data sampler: pts_ratio:", data_dict['pts_ratio'])
             exit()

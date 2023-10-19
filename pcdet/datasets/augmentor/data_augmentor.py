@@ -262,15 +262,15 @@ class DataAugmentor(object):
 
         Returns:
         """
-        if (np.isnan(data_dict['pts_ratio']).any()):
-            print("before data augmentor: pts_ratio:", data_dict['pts_ratio'])
-            exit()
+        # if (np.isnan(data_dict['pts_ratio']).any()):
+        #     print("before data augmentor: pts_ratio:", data_dict['pts_ratio'])
+        #     exit()
         for cur_augmentor in self.data_augmentor_queue:
             # print(cur_augmentor)
             data_dict = cur_augmentor(data_dict=data_dict)
-        if (np.isnan(data_dict['pts_ratio']).any()):
-            print("after data augmentor: pts_ratio:", data_dict['pts_ratio'])
-            exit()
+        # if (np.isnan(data_dict['pts_ratio']).any()):
+        #     print("after data augmentor: pts_ratio:", data_dict['pts_ratio'])
+        #     exit()
         data_dict['gt_boxes'][:, 6] = common_utils.limit_period(
             data_dict['gt_boxes'][:, 6], offset=0.5, period=2 * np.pi
         )

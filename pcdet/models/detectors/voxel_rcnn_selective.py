@@ -9,6 +9,10 @@ class VoxelRCNN_Selective(Detector3DTemplate):
     def forward(self, batch_dict):
         # print(batch_dict.keys())
         # print(batch_dict['frame_id'])
+        # print(help(self.dataset))
+        for x in dir(self.dataset):
+            print(x)
+        exit()
         for cur_module in self.module_list:
             batch_dict = cur_module(batch_dict)
         # print(batch_dict.keys())

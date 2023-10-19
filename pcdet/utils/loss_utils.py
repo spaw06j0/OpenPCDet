@@ -299,6 +299,31 @@ def neg_loss_cornernet(pred, gt, mask=None):
         loss = loss - (pos_loss + neg_loss) / num_pos
     return loss
 
+def get_loss_cornernet(pred, gt, ind, mask=None):
+    pos_inds = gt.eq(1).float()
+    neg_inds = gt.lt(1).float()
+
+    neg_weights = torch.pow(1 - gt, 4)
+
+    loss = 0
+
+    pos_loss = torch.log(pred) * torch.pow(1 - pred, 2) * pos_inds
+    neg_loss = torch.log(1 - pred) * torch.pow(pred, 2) * neg_weights * neg_inds
+
+    if mask is not None:
+        mask = mask[:, None, :, :].float()
+        pos_loss = pos_loss * mask
+        neg_loss = neg_loss * mask
+        num_pos = (pos_inds.float() * mask).sum()
+    else:
+        num_pos = pos_inds.float().sum()
+    p_loss = _transpose_and_gather_feat(pos_loss, ind)
+    n_loss = _transpose_and_gather_feat(neg_loss, ind)
+    if num_pos == 0:
+        loss = loss - n_loss
+    else:
+        loss = loss - (p_loss + n_loss) / num_pos
+    return loss
 
 class FocalLossCenterNet(nn.Module):
     """
@@ -310,9 +335,15 @@ class FocalLossCenterNet(nn.Module):
 
     def forward(self, out, target, mask=None):
         return self.neg_loss(out, target, mask=mask)
+class GetClsLoss(nn.Module):
+    def __init__(self):
+        super(GetClsLoss, self).__init__()
+        self.get_loss = get_loss_cornernet
 
+    def forward(self, out, target, ind, mask=None):
+        return self.get_loss(out, target, ind, mask=mask)
 
-def _reg_loss(regr, gt_regr, mask):
+def _reg_loss(regr, gt_regr, mask, importance):
     """
     Refer to https://github.com/tianweiy/CenterPoint
     L1 regression loss
@@ -328,8 +359,9 @@ def _reg_loss(regr, gt_regr, mask):
     mask *= isnotnan
     regr = regr * mask
     gt_regr = gt_regr * mask
-
     loss = torch.abs(regr - gt_regr)
+    loss = loss * importance
+
     loss = loss.transpose(2, 0)
 
     loss = torch.sum(loss, dim=2)
@@ -341,6 +373,47 @@ def _reg_loss(regr, gt_regr, mask):
     # loss = loss / (num + 1e-4)
     loss = loss / torch.clamp_min(num, min=1.0)
     # import pdb; pdb.set_trace()
+    return loss
+
+def _reg_loss_o(regr, gt_regr, mask):
+    """
+    Refer to https://github.com/tianweiy/CenterPoint
+    L1 regression loss
+    Args:
+        regr (batch x max_objects x dim)
+        gt_regr (batch x max_objects x dim)
+        mask (batch x max_objects)
+    Returns:
+    """
+    num = mask.float().sum()
+    mask = mask.unsqueeze(2).expand_as(gt_regr).float()
+    isnotnan = (~ torch.isnan(gt_regr)).float()
+    mask *= isnotnan
+    regr = regr * mask
+    gt_regr = gt_regr * mask
+    loss = torch.abs(regr - gt_regr)
+
+    loss = loss.transpose(2, 0)
+
+    loss = torch.sum(loss, dim=2)
+    loss = torch.sum(loss, dim=1)
+    # else:
+    #  # D x M x B
+    #  loss = loss.reshape(loss.shape[0], -1)
+
+    # loss = loss / (num + 1e-4)
+    loss = loss / torch.clamp_min(num, min=1.0)
+    # import pdb; pdb.set_trace()
+    return loss
+
+def _get_reg_loss(regr, gt_regr, mask):
+    num = mask.float().sum()
+    mask = mask.unsqueeze(2).expand_as(gt_regr).float()
+    isnotnan = (~ torch.isnan(gt_regr)).float()
+    mask *= isnotnan
+    regr = regr * mask
+    gt_regr = gt_regr * mask
+    loss = torch.abs(regr - gt_regr)
     return loss
 
 
@@ -370,7 +443,7 @@ class RegLossCenterNet(nn.Module):
     def __init__(self):
         super(RegLossCenterNet, self).__init__()
 
-    def forward(self, output, mask, ind=None, target=None):
+    def forward(self, output, mask, ind=None, target=None, importance=None):
         """
         Args:
             output: (batch x dim x h x w) or (batch x max_objects)
@@ -383,5 +456,20 @@ class RegLossCenterNet(nn.Module):
             pred = output
         else:
             pred = _transpose_and_gather_feat(output, ind)
-        loss = _reg_loss(pred, target, mask)
+        if importance is None:
+            loss = _reg_loss_o(pred, target, mask)
+        else:
+            loss = _reg_loss(pred, target, mask, importance)
+        return loss
+
+class GetRegLoss(nn.Module):
+    def __init__(self):
+        super(GetRegLoss, self).__init__()
+
+    def forward(self, output, mask, ind=None, target=None):
+        if ind is None:
+            pred = output
+        else:
+            pred = _transpose_and_gather_feat(output, ind)
+        loss = _get_reg_loss(pred, target, mask)
         return loss

@@ -297,8 +297,8 @@ class AnchorSelectiveHeadTemplate(nn.Module):
         # sin(a - b) = sinacosb-cosasinb
         box_preds_sin, reg_targets_sin = self.add_sin_difference(box_preds, box_reg_targets)
         loc_loss_src = self.reg_loss_func(box_preds_sin, reg_targets_sin, weights=reg_weights)  # [N, M]
-        print(importance_masks[positives].shape)
-        print(importance_masks[positives])
+        # print(importance_masks[positives].shape)
+        # print(importance_masks[positives])
         importance_masks = importance_masks.view(batch_size, -1, 1)
 
         # weights need to be adjuested 

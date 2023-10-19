@@ -25,8 +25,8 @@ class SECONDNet(Detector3DTemplate):
 
     def get_training_loss(self, batch_dict):
         disp_dict = {}
-
         loss_rpn, tb_dict = self.dense_head.get_loss()
+        # loss_rpn, tb_dict = self.dense_head.get_adaptive_loss()
         tb_dict = {
             'loss_rpn': loss_rpn.item(),
             **tb_dict

@@ -1,0 +1,3 @@
+[submodule "TED"]
+	path = TED
+	url = https://github.com/spaw06j0/TED.git
